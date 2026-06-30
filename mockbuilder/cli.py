@@ -1,18 +1,21 @@
 """Command-line interface for MockBuilder.
 
-Currently exposes a single ``build`` command whose pipeline is stubbed out.
-The real crawl -> reason -> generate -> verify pipeline is wired in later phases.
+Exposes a single ``build`` command. As of Phase 1 it runs the crawler to capture
+evidence; the reason -> generate -> verify stages are wired in later phases.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
+
+from .crawler.crawler import Crawler
 
 
 def run_build(url: str, out_dir: str) -> None:
-    """Stub entry point for the build pipeline."""
-    print(f"Pipeline stubbed for {url} -> {out_dir}")
+    """Run the build pipeline. Phase 1: crawl the URL and capture evidence."""
+    asyncio.run(Crawler().crawl(url))
 
 
 def build_parser() -> argparse.ArgumentParser:

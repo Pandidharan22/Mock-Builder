@@ -58,6 +58,9 @@ test-results/
 playwright-report/
 playwright/.cache/
 
+# ---- MockBuilder generated artifacts ----
+evidence/
+
 # ---- macOS ----
 .DS_Store
 .AppleDouble
