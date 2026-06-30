@@ -1,0 +1,294 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://omnisavant.ai/schemas/app-model.v1.json",
+  "title": "AppModel",
+  "description": "The single source of truth that the reasoning layer produces and the generator consumes. This schema is the CONTRACT between the (non-deterministic) LLM stage and the (deterministic) code-generation stage. The LLM's only job is to fill this object correctly; it never writes code. If the output validates against this schema, the generator can always produce a working harness. Everything downstream — React components, data files, data-testids, the manifest, the verifier checks — is derived mechanically from this document.",
+  "type": "object",
+  "required": ["meta", "designTokens", "entities", "screens", "flows"],
+  "additionalProperties": false,
+
+  "properties": {
+    "meta": {
+      "type": "object",
+      "description": "Provenance and identity of the mock. Lets us trace any output back to the source crawl and the model/prompt that produced it (important for reproducibility and debugging).",
+      "required": ["sourceUrl", "appName", "appType", "generatedAt", "modelVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceUrl": { "type": "string", "format": "uri", "description": "The URL that was crawled." },
+        "appName": { "type": "string", "description": "Human-friendly name inferred for the app, e.g. 'Instamart'. Used in titles and the package name." },
+        "appType": {
+          "type": "string",
+          "description": "Coarse category inferred from the crawl. Drives NOTHING in the generator logic (the generator is generic); it exists only for reporting and for the verifier's faithfulness heuristics.",
+          "enum": ["ecommerce", "marketplace", "dashboard", "blog", "social", "saas-tool", "content-site", "other"]
+        },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "modelVersion": { "type": "string", "description": "Identifier of the LLM + prompt version used, e.g. 'claude-opus-4.8/reasoning-v3'. Pinned for reproducibility." },
+        "crawlEvidenceHash": { "type": "string", "description": "SHA of the crawl evidence bundle this model was derived from. Same hash => cached model can be reused (determinism + cost control)." }
+      }
+    },
+
+    "designTokens": {
+      "type": "object",
+      "description": "Extracted, NOT invented. Computed styles harvested from the live app during the crawl, normalized into a small theme. The generator emits these into tailwind.config.js so regenerated components match the source app's look without copying its markup.",
+      "required": ["colors", "typography", "spacing", "radii"],
+      "additionalProperties": false,
+      "properties": {
+        "colors": {
+          "type": "object",
+          "description": "Semantic color roles mapped to hex values observed in the source. Keep the palette small; collapse near-duplicates.",
+          "required": ["primary", "background", "surface", "text"],
+          "properties": {
+            "primary": { "$ref": "#/$defs/hexColor" },
+            "secondary": { "$ref": "#/$defs/hexColor" },
+            "accent": { "$ref": "#/$defs/hexColor" },
+            "background": { "$ref": "#/$defs/hexColor" },
+            "surface": { "$ref": "#/$defs/hexColor" },
+            "text": { "$ref": "#/$defs/hexColor" },
+            "textMuted": { "$ref": "#/$defs/hexColor" },
+            "border": { "$ref": "#/$defs/hexColor" },
+            "success": { "$ref": "#/$defs/hexColor" },
+            "danger": { "$ref": "#/$defs/hexColor" }
+          },
+          "additionalProperties": { "$ref": "#/$defs/hexColor" }
+        },
+        "typography": {
+          "type": "object",
+          "required": ["fontFamily"],
+          "properties": {
+            "fontFamily": { "type": "string", "description": "Primary font stack observed, e.g. \"'Inter', system-ui, sans-serif\"." },
+            "headingFontFamily": { "type": "string" },
+            "baseSize": { "type": "string", "description": "Base font size, e.g. '16px'." },
+            "scale": { "type": "array", "items": { "type": "string" }, "description": "Observed type scale, smallest to largest." }
+          }
+        },
+        "spacing": {
+          "type": "object",
+          "description": "Spacing scale observed (margins/paddings/gaps). Keys are scale steps, values are px/rem.",
+          "additionalProperties": { "type": "string" }
+        },
+        "radii": {
+          "type": "object",
+          "description": "Border-radius scale observed.",
+          "additionalProperties": { "type": "string" }
+        },
+        "shadows": {
+          "type": "object",
+          "description": "Optional elevation scale observed.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+
+    "entities": {
+      "type": "array",
+      "description": "The app's DATA MODEL, inferred from API payloads where available and synthesized to match the observed UI otherwise. These become typed local-data files (e.g. products.js). This is what makes the harness backend-free: all data is local and deterministic.",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+
+    "components": {
+      "type": "array",
+      "description": "Reusable UI components identified across screens (the repeated, role-bearing building blocks — ProductCard, CategoryPill, CartLineItem). De-duplicating these is what keeps generated code clean and DRY instead of one giant blob per screen.",
+      "items": { "$ref": "#/$defs/component" }
+    },
+
+    "screens": {
+      "type": "array",
+      "description": "The distinct screens of the app. Each screen is a route. A screen owns a set of variants (the happy path PLUS edge states like empty/error/loading) — edge-state completeness is a first-class requirement, not an afterthought.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/screen" }
+    },
+
+    "flows": {
+      "type": "array",
+      "description": "Named user journeys expressed as ordered paths through screens via interactions. This is the graph an AI agent walks. Every flow must be fully connected end-to-end (the verifier asserts no dead ends).",
+      "items": { "$ref": "#/$defs/flow" }
+    }
+  },
+
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$",
+      "description": "A hex color string."
+    },
+
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-zA-Z0-9]*$",
+      "description": "camelCase identifier safe to use as a JS variable / React prop name."
+    },
+
+    "kebabId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "kebab-case id safe to use in routes and data-testids."
+    },
+
+    "entity": {
+      "type": "object",
+      "required": ["name", "fields", "seed"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/identifier", "description": "Singular entity name, e.g. 'product'." },
+        "description": { "type": "string" },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "$ref": "#/$defs/identifier" },
+              "type": {
+                "type": "string",
+                "enum": ["string", "number", "boolean", "id", "imageUrl", "currency", "enum", "ref", "array"]
+              },
+              "enumValues": { "type": "array", "items": { "type": "string" }, "description": "Required when type is 'enum'." },
+              "refEntity": { "$ref": "#/$defs/identifier", "description": "Required when type is 'ref' or 'array' of refs: the entity this points to." },
+              "optional": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "seed": {
+          "type": "array",
+          "description": "Concrete seed records used as the local dataset. Must be deterministic (no random generation at runtime). Enough rows to make the UI look real (e.g. 8-20 products).",
+          "items": { "type": "object" }
+        }
+      }
+    },
+
+    "component": {
+      "type": "object",
+      "required": ["name", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Z][a-zA-Z0-9]*$", "description": "PascalCase React component name." },
+        "role": { "type": "string", "description": "What this component is, semantically, e.g. 'displays a single product with image, title, price, and add-to-cart button'." },
+        "boundToEntity": { "$ref": "#/$defs/identifier", "description": "If this component renders an entity, which one." },
+        "props": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "$ref": "#/$defs/identifier" },
+              "type": { "type": "string" },
+              "optional": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "interactiveElements": {
+          "type": "array",
+          "description": "Actionable elements inside this component. Each gets a stable data-testid so agents can address it. The {id} placeholder is interpolated with the bound entity's id at render time, giving per-instance addressability (e.g. add-to-cart-btn-{id}).",
+          "items": { "$ref": "#/$defs/interactiveElement" }
+        }
+      }
+    },
+
+    "interactiveElement": {
+      "type": "object",
+      "required": ["testId", "kind", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "testId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\{id\\})?$",
+          "description": "Stable, semantic data-testid. MUST be derived from role, not from source CSS classes. May contain a single {id} placeholder for per-instance elements."
+        },
+        "kind": { "type": "string", "enum": ["button", "link", "input", "select", "toggle", "tab"] },
+        "label": { "type": "string", "description": "Accessible label / visible text. Also used as aria-label when no text content." },
+        "action": {
+          "type": "object",
+          "description": "What happens on interaction. Either a navigation, a local state mutation, or both. Kept declarative so the generator wires it deterministically and the verifier can predict outcomes.",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "enum": ["navigate", "mutateState", "navigateAndMutate", "none"] },
+            "targetScreen": { "$ref": "#/$defs/kebabId", "description": "For navigate: the screen id to go to." },
+            "mutation": {
+              "type": "object",
+              "description": "For mutateState: a declarative description of the local-state change, e.g. add item to cart context.",
+              "properties": {
+                "store": { "$ref": "#/$defs/identifier", "description": "Which context/store is affected, e.g. 'cart'." },
+                "op": { "type": "string", "enum": ["add", "remove", "increment", "decrement", "set", "clear", "toggle"] },
+                "payloadFrom": { "type": "string", "description": "Where the payload comes from, e.g. 'boundEntity' or a field name." }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "screen": {
+      "type": "object",
+      "required": ["id", "name", "route", "variants"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/kebabId", "description": "Stable screen id, e.g. 'product-listing'." },
+        "name": { "type": "string", "description": "Human name, e.g. 'Product Listing Page'." },
+        "route": { "type": "string", "pattern": "^/", "description": "React Router path, e.g. '/category/:categoryId'." },
+        "purpose": { "type": "string", "description": "One sentence on what the user does here. Helps the LLM reason about which edge states are needed." },
+        "layout": {
+          "type": "object",
+          "description": "Coarse layout composition: which components appear and in what region. Deliberately coarse — pixel-perfection is not the goal; recognizable structure is.",
+          "properties": {
+            "regions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "components"],
+                "properties": {
+                  "name": { "type": "string", "enum": ["header", "nav", "sidebar", "main", "footer", "modal"] },
+                  "components": { "type": "array", "items": { "type": "string" }, "description": "Component names placed in this region." },
+                  "repeats": { "type": "boolean", "description": "True if the component(s) render once per entity record (e.g. a grid of ProductCards)." },
+                  "repeatsOver": { "$ref": "#/$defs/identifier", "description": "Entity to iterate over when repeats is true." }
+                }
+              }
+            }
+          }
+        },
+        "variants": {
+          "type": "array",
+          "description": "The states this screen can be in. 'default' is the happy path. Edge variants (empty/error/loading/unavailable) are REQUIRED where they make sense for the screen's purpose — this is the edge-state-completeness property, enforced.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "kind"],
+            "properties": {
+              "id": { "$ref": "#/$defs/kebabId", "description": "Variant id, e.g. 'empty', 'error'." },
+              "kind": { "type": "string", "enum": ["default", "empty", "error", "loading", "unavailable", "success"] },
+              "description": { "type": "string", "description": "What the user sees in this state and why it occurs." },
+              "trigger": { "type": "string", "description": "How an agent reaches this variant, e.g. 'cart has zero items' or '?state=empty query param'. The generator exposes a deterministic switch (query param) so agents can force any variant." }
+            }
+          }
+        }
+      }
+    },
+
+    "flow": {
+      "type": "object",
+      "required": ["id", "name", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/kebabId" },
+        "name": { "type": "string", "description": "e.g. 'Browse to checkout'." },
+        "description": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "description": "Ordered steps. Each step is an interaction performed on a screen that lands on the next screen. The verifier executes these in order against the built harness to prove the flow is navigable and deterministic.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["screen", "testId"],
+            "properties": {
+              "screen": { "$ref": "#/$defs/kebabId", "description": "Screen the agent is on for this step." },
+              "variant": { "$ref": "#/$defs/kebabId", "description": "Optional: the variant to start in (defaults to 'default')." },
+              "testId": { "type": "string", "description": "The data-testid of the element to act on. The {id} placeholder may be resolved to a concrete seed id." },
+              "expectScreen": { "$ref": "#/$defs/kebabId", "description": "Screen the agent should land on after the action. Asserted by the verifier." }
+            }
+          }
+        }
+      }
+    }
+  }
+}
