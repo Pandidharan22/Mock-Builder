@@ -1,9 +1,11 @@
 """Design-token harvester.
 
-Extracts (never invents) a small set of computed styles from the live page so the
+Extracts (never invents) a small set of styles from the live page so the
 generator can emit a theme that resembles the source app. Phase 1 keeps this
 deliberately coarse: the body font stack plus background colors observed on the
-major structural regions.
+major structural regions — sampling both modern layout landmarks and legacy
+presentation markup (``table``/``td`` with ``bgcolor``) so older sites like
+Hacker News still yield their brand colors.
 """
 
 from __future__ import annotations
@@ -16,9 +18,12 @@ if TYPE_CHECKING:  # pragma: no cover - import only for type hints
     from playwright.async_api import Page
 
 
-# Reads the computed font-family of <body> and the background-color of the main
-# structural regions (falling back to the first few generic divs when semantic
-# landmarks are absent). Returns a plain, JSON-serializable dict.
+# Reads the computed font-family of <body> plus structural background colors.
+# Samples modern layout landmarks (header/nav/main/footer) AND legacy layout
+# markup (table/td), and for each element prefers the presentational `bgcolor`
+# attribute (e.g. Hacker News's `<td bgcolor="#ff6600">`) over the computed
+# background-color. Colors are normalized to canonical #rrggbb. Returns a plain,
+# JSON-serializable dict.
 _HARVEST_JS = r"""
 () => {
   const bodyStyle = getComputedStyle(document.body);
@@ -26,16 +31,66 @@ _HARVEST_JS = r"""
   const isVisibleColor = (c) =>
     c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent';
 
+  // rgb()/rgba() -> #rrggbb (alpha dropped; we only sample visible colors).
+  const rgbToHex = (rgb) => {
+    const m = String(rgb).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!m) return null;
+    const toHex = (n) => Number(n).toString(16).padStart(2, '0');
+    return '#' + toHex(m[1]) + toHex(m[2]) + toHex(m[3]);
+  };
+
+  // Normalize a legacy `bgcolor` attribute — hex with or without '#', or a
+  // named color like 'orange' — to a canonical #rrggbb, using the browser's own
+  // color parser to validate and resolve it. Returns null if it isn't a color.
+  const normalizeAttrColor = (value) => {
+    if (!value) return null;
+    let v = String(value).trim();
+    if (/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(v)) v = '#' + v;  // legacy 'ff6600'
+    const probe = document.createElement('span');
+    probe.style.color = '';
+    probe.style.color = v;              // invalid values are ignored -> stays ''
+    if (probe.style.color === '') return null;
+    document.body.appendChild(probe);
+    const resolved = getComputedStyle(probe).color;  // canonical rgb(...)
+    probe.remove();
+    return rgbToHex(resolved);
+  };
+
+  // Background of an element: legacy `bgcolor` attribute first, then the
+  // computed background-color; null for transparent/default.
+  const bgOf = (el) => {
+    const attr = normalizeAttrColor(el.getAttribute('bgcolor'));
+    if (attr) return attr;
+    const computed = getComputedStyle(el).backgroundColor;
+    return isVisibleColor(computed) ? (rgbToHex(computed) || computed) : null;
+  };
+
   const structural = {};
-  const selectors = ['header', 'nav', 'main', 'footer'];
-  for (const sel of selectors) {
+  const structuralColors = [];
+  const addColor = (c) => {
+    if (c && !structuralColors.includes(c)) structuralColors.push(c);
+  };
+
+  // Modern layout landmarks.
+  for (const sel of ['header', 'nav', 'main', 'footer']) {
     const el = document.querySelector(sel);
     if (el) {
-      const bg = getComputedStyle(el).backgroundColor;
-      if (isVisibleColor(bg)) {
-        structural[sel] = bg;
-      }
+      const bg = bgOf(el);
+      if (bg) { structural[sel] = bg; addColor(bg); }
     }
+  }
+
+  // Legacy presentation markup: <table>/<td> commonly carry bgcolor on older or
+  // email-style layouts (this is where Hacker News hides its #ff6600 bar).
+  const cells = Array.from(document.querySelectorAll('table, td')).slice(0, 60);
+  for (const el of cells) {
+    const bg = bgOf(el);
+    if (bg) {
+      const key = el.tagName.toLowerCase();
+      if (!(key in structural)) structural[key] = bg;  // first per tag
+      addColor(bg);
+    }
+    if (structuralColors.length >= 8) break;
   }
 
   // Fallback: sample background colors from the first few generic divs so we
@@ -43,10 +98,8 @@ _HARVEST_JS = r"""
   const divBackgrounds = [];
   const divs = Array.from(document.querySelectorAll('div')).slice(0, 20);
   for (const d of divs) {
-    const bg = getComputedStyle(d).backgroundColor;
-    if (isVisibleColor(bg) && !divBackgrounds.includes(bg)) {
-      divBackgrounds.push(bg);
-    }
+    const bg = bgOf(d);
+    if (bg && !divBackgrounds.includes(bg)) divBackgrounds.push(bg);
     if (divBackgrounds.length >= 5) break;
   }
 
@@ -56,6 +109,7 @@ _HARVEST_JS = r"""
     bodyBackground: bodyStyle.backgroundColor,
     bodyColor: bodyStyle.color,
     structuralBackgrounds: structural,
+    structuralColors: structuralColors,
     divBackgrounds: divBackgrounds,
   };
 }

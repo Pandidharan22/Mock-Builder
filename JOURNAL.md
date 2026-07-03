@@ -53,6 +53,17 @@
 * **Verification:**
   > Built three linked `file://` pages (home → products / about, each with a "back home" link) plus a no-op button on home. Crawl recorded 2 unique states (home depth 0, products depth 1); the no-op button and both back-home links hashed to the already-visited home state and were correctly *not* re-recorded — demonstrating the loop guard. `design_tokens.json` and the `fixtures/` dir were created (fixtures empty offline, since `file://` issues no JSON requests).
 
+### Date: 2026-07-03
+* **Objective:** Fix the token-harvesting gap exposed by legacy HTML: the harvester missed Hacker News's `#ff6600` because that color lives on a `<td bgcolor="#ff6600">`, not on a semantic landmark or a `<div>` with a CSS background.
+* **Implementation Notes:**
+  > Broadened the `harvest_tokens` JS (`recorder/design_tokens.py`) to also sample `table`/`td` elements alongside `header`/`nav`/`main`/`footer` and generic `<div>`s.
+  > Added a `bgOf(el)` helper that prefers the presentational **`bgcolor` attribute** and falls back to the computed `background-color`, skipping transparent/default (`rgba(0,0,0,0)`, `transparent`). `bgcolor` values are normalized to canonical `#rrggbb` via `normalizeAttrColor()`, which handles hex with or without `#` (legacy `ff6600`) and named colors by round-tripping through the browser's own CSS color parser; computed rgb/rgba is likewise converted to hex.
+  > Output now includes a deduped `structuralColors` array (in addition to the `structuralBackgrounds` dict) so a brand color is captured even when it's not the first element of its tag.
+* **Challenges & Solutions:**
+  > **Fidelity across web eras.** Computed styles alone are blind to pre-CSS presentation attributes that plenty of real sites (and most HTML email) still use. Reading `bgcolor` alongside computed `background-color` — and normalizing everything to hex — makes the harvester robust to both modern and legacy architectures, so the "extracted, not invented" design-token contract actually holds for sites like Hacker News. Using the browser to parse/normalize colors (rather than a hand-rolled table) keeps named colors and shorthand hex correct for free.
+* **Verification:**
+  > Ran the updated `harvest_tokens` against a local fixture mirroring HN's legacy markup (`<table bgcolor="#f6f6ef">` wrapping a `<td bgcolor="#ff6600">`). Result: `structuralBackgrounds` = `{"table": "#f6f6ef", "td": "#ff6600"}` and `structuralColors` = `["#f6f6ef", "#ff6600"]` — HN's orange and beige both captured as normalized hex, with the Verdana font stack preserved. (Live HN run needs network + `GROQ_API_KEY`; the cached model JSON stays deleted so the pipeline re-runs.)
+
 ## Phase 2: Reasoning
 
 ### Date: 2026-06-30
