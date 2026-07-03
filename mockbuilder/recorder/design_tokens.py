@@ -103,11 +103,19 @@ _HARVEST_JS = r"""
     if (divBackgrounds.length >= 5) break;
   }
 
+  // Normalize the body colors to hex so we never feed raw rgb()/rgba() strings
+  // into the schema's hex-only color fields. A transparent body background has
+  // no meaningful color, so fall back to white.
+  const bodyBg = isVisibleColor(bodyStyle.backgroundColor)
+    ? (rgbToHex(bodyStyle.backgroundColor) || '#ffffff')
+    : '#ffffff';
+  const bodyFg = rgbToHex(bodyStyle.color) || '#000000';
+
   return {
     fontFamily: bodyStyle.fontFamily,
     baseSize: bodyStyle.fontSize,
-    bodyBackground: bodyStyle.backgroundColor,
-    bodyColor: bodyStyle.color,
+    bodyBackground: bodyBg,
+    bodyColor: bodyFg,
     structuralBackgrounds: structural,
     structuralColors: structuralColors,
     divBackgrounds: divBackgrounds,

@@ -33,5 +33,8 @@ CRITICAL INSTRUCTIONS:
 6. REFERENTIAL INTEGRITY:
 - The graph must be fully connected. Flows must ONLY navigate to screen IDs that you have explicitly defined in the 'screens' array. Every 'testId' referenced in a flow step MUST exist in the 'interactiveElements' of a component.
 
+7. SCHEMA STRICTNESS:
+- Never set optional fields to null. If an optional field does not apply, omit the key entirely.
+
 Your output will be piped directly into a deterministic React generator. If your JSON is malformed or hallucinates properties outside the schema, the build will crash.
 """

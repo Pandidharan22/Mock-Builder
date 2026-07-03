@@ -42,8 +42,10 @@ from .prompts import SYSTEM_PROMPT
 # (Groq alternative with vision: "qwen/qwen3.6-27b".)
 MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-# Max attempts through the validate-retry loop.
-MAX_RETRIES = 3
+# Max attempts through the validate-retry loop. Kept generous so a smaller model
+# has room to resolve several independent schema/integrity errors sequentially
+# without failing the build (avoids the "whack-a-mole" convergence trap).
+MAX_RETRIES = 5
 
 # The actual JSON Schema, injected into the prompt so the model targets the exact
 # contract (key names, arrays-vs-objects, required fields) rather than guessing
