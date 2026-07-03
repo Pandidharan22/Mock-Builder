@@ -21,6 +21,7 @@ Two guarantees wrap the non-deterministic call:
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,14 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
     elements_json = elements_path.read_text(encoding="utf-8")
     base64_image = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
 
+    # Design tokens are harvested by the crawler into a single shared file. Feed
+    # them to the model so it maps *extracted* colors/fonts to semantic roles
+    # rather than inventing them (the schema says tokens are extracted, not made up).
+    tokens_path = evidence_dir / "design_tokens.json"
+    tokens_json = (
+        tokens_path.read_text(encoding="utf-8") if tokens_path.exists() else "{}"
+    )
+
     # 3. Build the initial message (OpenAI vision format used by Groq):
     #    a system prompt plus a user turn carrying the elements text and the
     #    screenshot as an inline base64 data URL.
@@ -115,6 +124,7 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
                         "no extra top-level keys are allowed):\n\n"
                         f"{SCHEMA_TEXT}\n\n"
                         f"Here is the elements JSON:\n{elements_json}\n\n"
+                        f"Here are the extracted design tokens:\n{tokens_json}\n\n"
                         "Return ONLY valid AppModel JSON."
                     ),
                 },
@@ -138,6 +148,13 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
 
         try:
             candidate = json.loads(_strip_json_fences(raw_text))
+            # Never trust the model for the timestamp — stamp it programmatically
+            # for strict determinism/provenance. (Guarded so malformed output
+            # still flows to the validator and the retry loop.)
+            if isinstance(candidate, dict) and isinstance(candidate.get("meta"), dict):
+                candidate["meta"]["generatedAt"] = datetime.datetime.now(
+                    datetime.UTC
+                ).isoformat()
             validate_app_model(candidate)  # raises on schema violation
         except (json.JSONDecodeError, jsonschema.ValidationError) as exc:
             last_error = exc
