@@ -10,8 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "playwright",
-    "anthropic",
+    "groq",
     "jsonschema",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

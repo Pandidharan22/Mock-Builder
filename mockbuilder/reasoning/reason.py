@@ -1,9 +1,14 @@
 """LLM reasoning stage: crawl evidence -> validated AppModel.
 
 Takes the evidence captured for one crawl state (a full-page screenshot plus the
-discovered actionable elements) and asks Claude to synthesize an ``AppModel`` that
-conforms to ``app_model.schema.json``. The model's only job is to fill the
-contract; the (deterministic) generator consumes it downstream.
+discovered actionable elements) and asks a vision LLM to synthesize an
+``AppModel`` that conforms to ``app_model.schema.json``. The model's only job is
+to fill the contract; the (deterministic) generator consumes it downstream.
+
+Reasoning runs on **Groq** (Llama 4 Scout, multimodal) via the OpenAI-compatible
+chat-completions API — an open-weights, low-cost, high-throughput alternative to
+proprietary vision APIs. The full JSON Schema is injected into the prompt so the
+model targets the exact contract instead of inferring it from prose.
 
 Two guarantees wrap the non-deterministic call:
   * **Cache** — keyed by ``state_hash`` (see :mod:`.cache`); an unchanged crawl
@@ -20,37 +25,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-import anthropic
 import jsonschema
+from groq import AsyncGroq
 
-from ..models import validate_app_model
+from ..models import SCHEMA_PATH, validate_app_model
 from .cache import get_cached_model, save_cached_model
 from .prompts import SYSTEM_PROMPT
 
-# The requested model, `claude-3-5-sonnet-20240620`, is retired (returns 404).
-# `claude-sonnet-5` is its documented drop-in replacement — Sonnet-tier, current.
-MODEL = "claude-sonnet-5"
-
-# Generous output budget: an AppModel carries seed data for several entities.
-# Streaming avoids SDK HTTP timeouts at this size.
-MAX_TOKENS = 32000
+# Groq-hosted Llama 4 Scout (multimodal): the current open-weights Llama vision
+# model, succeeding the decommissioned llama-3.2-*-vision-preview ids. Cost-
+# effective and high-throughput; retargeting is a one-line change here.
+# (Groq alternative with vision: "qwen/qwen3.6-27b".)
+MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # Max attempts through the validate-retry loop.
 MAX_RETRIES = 3
 
-_INSTRUCTIONS = (
-    "You are given a screenshot of a web app screen and a JSON list of the "
-    "actionable elements discovered on it. Produce a single AppModel JSON "
-    "document that captures this app's structure, per the AppModel contract.\n\n"
-    "Discovered elements:\n{elements}\n\n"
-    "Respond with ONLY the raw AppModel JSON object. Do not wrap it in Markdown "
-    "code fences, and do not include any prose before or after it."
-)
-
-
-def _extract_text(response: "anthropic.types.Message") -> str:
-    """Concatenate the text blocks of a response (ignoring thinking blocks)."""
-    return "".join(block.text for block in response.content if block.type == "text")
+# The actual JSON Schema, injected into the prompt so the model targets the exact
+# contract (key names, arrays-vs-objects, required fields) rather than guessing
+# from prose. Smaller open models can't infer the shape without seeing it.
+SCHEMA_TEXT = SCHEMA_PATH.read_text(encoding="utf-8")
 
 
 def _strip_json_fences(text: str) -> str:
@@ -64,6 +58,18 @@ def _strip_json_fences(text: str) -> str:
         if stripped.rstrip().endswith("```"):
             stripped = stripped.rstrip()[: -len("```")]
     return stripped.strip()
+
+
+def _format_error(exc: Exception) -> str:
+    """Render a validation/parse failure as a short, targeted hint for the model.
+
+    ``str(jsonschema.ValidationError)`` embeds the entire schema and instance,
+    which is huge and unhelpful to feed back; use the location + message only.
+    """
+    if isinstance(exc, jsonschema.ValidationError):
+        location = exc.json_path  # e.g. "$.screens" or "$" for the root
+        return f"At {location}: {exc.message}"
+    return f"Invalid JSON: {exc}"
 
 
 async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any]:
@@ -84,47 +90,52 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
     elements_path = evidence_dir / f"{state_hash}_elements.json"
     image_path = evidence_dir / f"{state_hash}.png"
 
-    elements = json.loads(elements_path.read_text(encoding="utf-8"))
-    image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+    elements_json = elements_path.read_text(encoding="utf-8")
+    base64_image = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
 
-    # 3. Build the initial message: screenshot + elements + instructions.
-    # NOTE: no `temperature` — sampling params are rejected on this model, and
-    # the state_hash cache is the real determinism guarantee for the pipeline.
-    client = anthropic.AsyncAnthropic()
+    # 3. Build the initial message (OpenAI vision format used by Groq):
+    #    a system prompt plus a user turn carrying the elements text and the
+    #    screenshot as an inline base64 data URL.
+    client = AsyncGroq()  # picks up GROQ_API_KEY from the environment
     messages: list[dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
         {
             "role": "user",
             "content": [
                 {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": image_b64,
-                    },
-                },
-                {
                     "type": "text",
-                    "text": _INSTRUCTIONS.format(
-                        elements=json.dumps(elements, indent=2)
+                    "text": (
+                        "Your output MUST validate against this exact AppModel "
+                        "JSON Schema (note: `entities`, `components`, `screens`, "
+                        "and `flows` are ARRAYS; the top-level object requires "
+                        "`meta`, `designTokens`, `entities`, `screens`, `flows`; "
+                        "no extra top-level keys are allowed):\n\n"
+                        f"{SCHEMA_TEXT}\n\n"
+                        f"Here is the elements JSON:\n{elements_json}\n\n"
+                        "Return ONLY valid AppModel JSON."
                     ),
                 },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{base64_image}"},
+                },
             ],
-        }
+        },
     ]
 
-    # 4. Validate-retry loop.
+    # 4. Validate-retry loop. Groq supports temperature=0 for determinism.
     last_error: Exception | None = None
     for _ in range(MAX_RETRIES):
-        async with client.messages.stream(
+        response = await client.chat.completions.create(
             model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
             messages=messages,
-        ) as stream:
-            response = await stream.get_final_message()
+            temperature=0,
+        )
+        raw_text = response.choices[0].message.content or ""
 
-        raw_text = _extract_text(response)
         try:
             candidate = json.loads(_strip_json_fences(raw_text))
             validate_app_model(candidate)  # raises on schema violation
@@ -135,12 +146,18 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
             messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        "That output failed validation with the following error:\n"
-                        f"{exc}\n\n"
-                        "Return the corrected AppModel as raw JSON only — no code "
-                        "fences, no prose."
-                    ),
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "That output failed schema validation:\n"
+                                f"{_format_error(exc)}\n\n"
+                                "Fix ONLY what the error points to, keep the rest, "
+                                "and return the corrected AppModel as raw JSON only "
+                                "— no code fences, no prose."
+                            ),
+                        }
+                    ],
                 }
             )
             continue

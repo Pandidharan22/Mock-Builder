@@ -22,7 +22,7 @@
           "enum": ["ecommerce", "marketplace", "dashboard", "blog", "social", "saas-tool", "content-site", "other"]
         },
         "generatedAt": { "type": "string", "format": "date-time" },
-        "modelVersion": { "type": "string", "description": "Identifier of the LLM + prompt version used, e.g. 'claude-opus-4.8/reasoning-v3'. Pinned for reproducibility." },
+        "modelVersion": { "type": "string", "description": "Identifier of the LLM + prompt version used, e.g. 'meta-llama/llama-4-scout-17b-16e-instruct/reasoning-v3'. Pinned for reproducibility." },
         "crawlEvidenceHash": { "type": "string", "description": "SHA of the crawl evidence bundle this model was derived from. Same hash => cached model can be reused (determinism + cost control)." }
       }
     },

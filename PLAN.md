@@ -90,7 +90,7 @@ both *generality* (LLM handles arbitrary apps) and *defensibility*
 |-------|--------|-----------|
 | Pipeline orchestrator | **Python 3.11+** | Strongest language for the author; great Playwright + tooling story. |
 | Browser automation | **Playwright (async)** | Reliable JS-app rendering, network interception, screenshots. |
-| Reasoning | **Anthropic Claude API** | Vision + text in one call; strong structured-output adherence. |
+| Reasoning | **Groq API (Llama 3.2 Vision)** | Open-weights vision+text in one call; low-cost, high-throughput, no proprietary-API lock-in. |
 | Schema validation | **jsonschema** (Python) | Enforce the AppModel contract before generation. |
 | Generated app | **React + Vite + Tailwind + React Router + Context** | Conventional, Vercel-native, clean to read. |
 | Verification | **Playwright** (agent walk) + **eslint** + `vite build` | Turns each property into an executable check. |
@@ -162,8 +162,9 @@ mockbuilder/
 - Stand up `cli.py` with the full stage sequence wired to **stubs**, so
   `mockbuilder build <url>` runs end-to-end and produces an empty-but-valid
   output tree.
-- Anthropic client wrapper in `reasoning/` with: pinned model, `temperature=0`,
-  and the content-addressed cache (`cache.py`) keyed on evidence hash.
+- Groq (AsyncGroq) client wrapper in `reasoning/` with: pinned model,
+  `temperature=0`, and the content-addressed cache (`cache.py`) keyed on
+  evidence hash.
 
 **Acceptance:** `mockbuilder build https://example.com -o ./out` exits 0,
 creates the output tree, and a hand-written sample `AppModel` validates against
@@ -200,8 +201,8 @@ pipeline must be URL-agnostic — that's the whole point.
 ### Phase 2 — Reasoning layer (the centerpiece — de-risk early)
 **Goal:** turn `evidence/` into a **valid** `AppModel`.
 
-- `prompts.py`: a versioned system prompt instructing Claude to act as a senior
-  engineer reverse-engineering an app into the AppModel schema. The prompt:
+- `prompts.py`: a versioned system prompt instructing the vision model to act as
+  a senior engineer reverse-engineering an app into the AppModel schema. The prompt:
   - receives, per screen, the **screenshot + structural DOM + any fixtures**;
   - must **classify screens, identify repeated components, infer entities +
     deterministic seed data, map flow edges**;
