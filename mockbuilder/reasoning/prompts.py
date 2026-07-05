@@ -19,6 +19,9 @@ CRITICAL INSTRUCTIONS:
 2. COMPONENTS:
 - Identify reusable UI components (e.g., 'StoryRow', 'Navbar', 'FooterNav').
 - For interactive elements inside components, derive semantic `data-testid`s based on their role (e.g., `upvote-btn-{id}`). Never use raw CSS classes.
+- Every interactiveElement inside a component MUST have a populated 'action' object. If it opens a page, explicitly set type: 'navigate' and point targetScreen to the exact kebab-case screen ID. If it mutates state (like upvoting), set type: 'mutateState' with its matching store operation.
+- For elements that DISPLAY entity data (a title, price, name, points, etc.), the 'label' MUST be a field placeholder in curly braces that names a real field of the bound entity — e.g. '{title}', '{points}', '{price}' — NOT literal descriptive text like 'story title'. Only use literal text for fixed UI chrome (e.g. 'Upvote', 'Reply', 'Login').
+- A component with 'boundToEntity' set MUST include, as its FIRST interactiveElement, a primary display element (kind 'link') whose label is the entity's main text field placeholder (e.g. '{title}', '{name}', '{headline}'). The content itself must be visible — do NOT emit a row that is only action buttons.
 
 3. SCREENS & EDGE STATES:
 - Define the current screen based on the visual evidence.
@@ -32,6 +35,7 @@ CRITICAL INSTRUCTIONS:
 
 6. REFERENTIAL INTEGRITY:
 - The graph must be fully connected. Flows must ONLY navigate to screen IDs that you have explicitly defined in the 'screens' array. Every 'testId' referenced in a flow step MUST exist in the 'interactiveElements' of a component.
+- Achieve connectivity by ADDING the missing pieces, NEVER by deleting content. If an element or flow navigates to a screen, DEFINE that screen in the 'screens' array (with its own variants). Do NOT drop navigation, actions, entity-display elements, screens, or components to satisfy this rule. The app must stay rich and fully interactive.
 
 7. SCHEMA STRICTNESS:
 - Never set optional fields to null. If an optional field does not apply, omit the key entirely.

@@ -61,9 +61,12 @@ export function GlobalProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   // `mutate` takes a declarative action: { type, store, payload }.
   const mutate = (action) => dispatch(action);
+  // NB: a named value avoids an inline JSX object literal, whose doubled braces
+  // would collide with Jinja's output delimiters in the template.
+  const contextValue = { state, mutate };
 
   return (
-    <GlobalContext.Provider value={{ state, mutate }}>
+    <GlobalContext.Provider value={contextValue}>
       {children}
     </GlobalContext.Provider>
   );

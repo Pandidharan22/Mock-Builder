@@ -36,10 +36,11 @@ from ..models import SCHEMA_PATH, validate_app_model
 from .cache import get_cached_model, save_cached_model
 from .prompts import SYSTEM_PROMPT
 
-# Groq-hosted Llama 4 Scout (multimodal): the current open-weights Llama vision
-# model, succeeding the decommissioned llama-3.2-*-vision-preview ids. Cost-
-# effective and high-throughput; retargeting is a one-line change here.
-# (Groq alternative with vision: "qwen/qwen3.6-27b".)
+# Groq-hosted Llama 4 Scout (multimodal). NOTE: the stronger "qwen/qwen3.6-27b"
+# is preferable for reasoning quality but is blocked on this account's free tier
+# (8000 TPM; our request — full schema + base64 screenshot — is ~21K tokens →
+# HTTP 413). Scout fits the limit. Revisit qwen after a Groq tier upgrade or once
+# the request is slimmed (cropped screenshot / trimmed schema).
 MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # Max attempts through the validate-retry loop. Kept generous so a smaller model
@@ -76,7 +77,17 @@ def _format_error(exc: Exception) -> str:
     """
     if isinstance(exc, jsonschema.ValidationError):
         location = exc.json_path  # e.g. "$.screens" or "$" for the root
-        return f"At {location}: {exc.message}"
+        hint = f"At {location}: {exc.message}"
+        # Regex-pattern violations are cryptic; add a plain-English fix so the
+        # model stops thrashing on identifier casing (a recurring failure).
+        if exc.validator == "pattern" and isinstance(exc.instance, str):
+            val = exc.instance
+            if "_" in val or " " in val or val != val.lower():
+                hint += (
+                    " (identifiers must be camelCase — no underscores, spaces, "
+                    "or leading capitals; e.g. 'commentCount' not 'comment_count')"
+                )
+        return hint
     if isinstance(exc, json.JSONDecodeError):
         return f"Invalid JSON: {exc}"
     if isinstance(exc, ValueError):
@@ -135,6 +146,20 @@ def verify_graph_integrity(model: dict) -> list[str]:
                     f"Flow '{flow_id}' step references an undefined testId: "
                     f"'{test_id}'."
                 )
+
+    # A component element that navigates must target a screen that exists — a
+    # nav to an undeclared screen is a dead click in the generated harness.
+    for comp in model.get("components", []):
+        comp_name = comp.get("name", "<unknown>")
+        for el in comp.get("interactiveElements", []):
+            action = el.get("action") or {}
+            if action.get("type") in ("navigate", "navigateAndMutate"):
+                target = action.get("targetScreen")
+                if target is not None and target not in screen_ids:
+                    violations.append(
+                        f"Component '{comp_name}' element '{el.get('testId')}' "
+                        f"navigates to an undefined screen: '{target}'."
+                    )
 
     return violations
 

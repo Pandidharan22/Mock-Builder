@@ -8,6 +8,7 @@ AppModel always yields byte-identical output.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -45,6 +46,19 @@ def route_path(route: str) -> str:
     return _PLACEHOLDER.sub(r":\1", str(route))
 
 
+def nav_target(route: str) -> str:
+    """Convert a React-Router route into a JS ``navigate()`` target expression.
+
+    Path params become per-instance interpolations so a click lands on the
+    concrete row: ``/story/:id`` -> ``` `/story/${props.id}` ```. A param-free
+    route becomes a plain quoted string.
+    """
+    text = str(route)
+    if ":" in text:
+        return "`" + re.sub(r":(\w+)", r"${props.\1}", text) + "`"
+    return json.dumps(text)
+
+
 def package_slug(name: str) -> str:
     """Slugify an app name into a valid (lowercase, url-safe) npm package name."""
     slug = _UNSAFE_NAME.sub("-", str(name).lower()).strip("-")
@@ -67,6 +81,7 @@ class ReactGenerator:
         )
         self.env.filters["label_expr"] = label_expr
         self.env.filters["route_path"] = route_path
+        self.env.filters["nav_target"] = nav_target
 
     def _write(self, template_name: str, relpath: str, **context: Any) -> Path:
         """Render ``template_name`` and write it to ``output_dir/relpath``."""
@@ -93,15 +108,84 @@ class ReactGenerator:
         out_path.write_text(rendered, encoding="utf-8")
         return out_path
 
+    def _flow_action_lookup(self) -> dict[str, str]:
+        """Map a flow-step ``testId`` -> its ``expectScreen`` target.
+
+        This is the deterministic interactivity source: the flows graph already
+        encodes which element leads where, independent of whether the LLM
+        remembered to put an ``action`` on the element itself.
+        """
+        lookup: dict[str, str] = {}
+        for flow in self.app_model.get("flows", []):
+            for step in flow.get("steps", []):
+                test_id = step.get("testId")
+                target = step.get("expectScreen")
+                if test_id and target:
+                    lookup.setdefault(test_id, target)
+        return lookup
+
+    @staticmethod
+    def _testids_equivalent(a: str, b: str) -> bool:
+        """True if two testIds match, treating ``{id}`` as a per-instance slot
+        (so ``story-link-{id}`` matches a concrete ``story-link-5``)."""
+        if a == b:
+            return True
+        for pattern, other in ((a, b), (b, a)):
+            if "{id}" in pattern:
+                regex = (
+                    "^"
+                    + re.escape(pattern).replace(re.escape("{id}"), r"[A-Za-z0-9_-]+")
+                    + "$"
+                )
+                if re.fullmatch(regex, other):
+                    return True
+        return False
+
+    def _inject_flow_actions(
+        self, component: dict[str, Any], flow_lookup: dict[str, str], screen_ids: set
+    ) -> dict[str, Any]:
+        """Return a copy of ``component`` where elements lacking a real action
+        get a synthetic ``navigate`` action derived from the flows graph."""
+        enriched = copy.deepcopy(component)
+        for el in enriched.get("interactiveElements", []):
+            action = el.get("action") or {}
+            if action.get("type") and action.get("type") != "none":
+                continue  # keep a real model-provided action
+
+            test_id = el.get("testId", "")
+            target = flow_lookup.get(test_id)
+            if target is None:
+                for flow_tid, tgt in flow_lookup.items():
+                    if self._testids_equivalent(test_id, flow_tid):
+                        target = tgt
+                        break
+            if target and target in screen_ids:
+                el["action"] = {"type": "navigate", "targetScreen": target}
+        return enriched
+
     def generate_components(self) -> list[Path]:
         """Render one ``src/components/{Name}.jsx`` per component in the model."""
         template = self.env.get_template("Component.jsx.jinja")
         out_dir = self.output_dir / "src" / "components"
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # Map screen id -> React-Router route so navigate actions can resolve
+        # `action.targetScreen` (a kebab id) to a concrete path.
+        screen_routes = {
+            s["id"]: route_path(s.get("route", "/"))
+            for s in self.app_model.get("screens", [])
+        }
+        screen_ids = set(screen_routes)
+        flow_lookup = self._flow_action_lookup()
+
         written: list[Path] = []
         for component in self.app_model.get("components", []):
-            rendered = template.render(component=component)
+            # Deterministically wire navigation from the flows graph for any
+            # element the model left without an action.
+            enriched = self._inject_flow_actions(component, flow_lookup, screen_ids)
+            rendered = template.render(
+                component=enriched, screen_routes=screen_routes
+            )
             out_path = out_dir / f"{component['name']}.jsx"
             out_path.write_text(rendered, encoding="utf-8")
             written.append(out_path)

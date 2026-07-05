@@ -38,18 +38,18 @@ export default function {{ component_name }}() {
 {% for variant in screen.variants %}
 {% if variant.kind != 'default' %}
   if (currentState === '{{ variant.kind }}') {
-    return <div data-testid="{{ variant.kind }}-state">{ {{ (variant.description or (variant.kind ~ ' state')) | tojson }} }</div>;
+    return <div data-testid="{{ variant.kind }}-state" className="min-h-screen bg-background flex items-center justify-center text-gray-500">{ {{ (variant.description or (variant.kind ~ ' state')) | tojson }} }</div>;
   }
 {% endif %}
 {% endfor %}
 
   // Default (happy path): render each layout region and its components.
   return (
-    <div data-testid="{{ screen.id }}-screen">
+    <div data-testid="{{ screen.id }}-screen" className="min-h-screen bg-background py-4">
 {% set tag_map = {'header': 'header', 'nav': 'nav', 'sidebar': 'aside', 'main': 'main', 'footer': 'footer', 'modal': 'div'} %}
 {% for region in regions %}
 {% set tag = tag_map.get(region.name, 'div') %}
-      <{{ tag }} data-testid="{{ region.name }}-region">
+      <{{ tag }} data-testid="{{ region.name }}-region" className="max-w-3xl mx-auto bg-surface shadow-sm">
 {% if region.repeats and region.repeatsOver %}
         {(state['{{ region.repeatsOver }}'] || []).map((item) => (
           <Fragment key={item.id}>
