@@ -18,9 +18,11 @@ import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from .crawler.crawler import EVIDENCE_DIR, Crawler
+from .generator.generate import ReactGenerator
 from .reasoning.reason import synthesize_model
 
 
@@ -35,8 +37,8 @@ def _check_credentials() -> bool:
     return bool(os.getenv("GROQ_API_KEY"))
 
 
-async def _build_pipeline(url: str) -> None:
-    """Crawl ``url``, then synthesize an AppModel for the primary state."""
+async def _build_pipeline(url: str, out_dir: str) -> None:
+    """Crawl ``url``, synthesize an AppModel, then generate the React harness."""
     records = await Crawler().crawl(url)
     if not records:
         print("No states captured; nothing to synthesize.")
@@ -61,10 +63,19 @@ async def _build_pipeline(url: str) -> None:
         f"-> {EVIDENCE_DIR / f'{state_hash}_model.json'}"
     )
 
+    # Deterministic generation: compile the validated AppModel into a React
+    # harness under the output directory (no AI, pure Jinja2 templates).
+    print(f"Generating React harness -> {out_dir} ...")
+    ReactGenerator(model, out_dir).generate()
+    print(
+        f"Wrote {len(model.get('components', []))} component(s) and "
+        f"{len(model.get('screens', []))} screen(s) under {Path(out_dir) / 'src'}"
+    )
+
 
 def run_build(url: str, out_dir: str) -> None:
-    """Run the build pipeline: crawl the URL, then reason the primary state."""
-    asyncio.run(_build_pipeline(url))
+    """Run the build pipeline: crawl, reason, then generate the harness."""
+    asyncio.run(_build_pipeline(url, out_dir))
 
 
 def build_parser() -> argparse.ArgumentParser:
