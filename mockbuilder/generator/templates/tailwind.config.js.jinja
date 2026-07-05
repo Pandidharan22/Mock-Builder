@@ -1,0 +1,16 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,jsx}'],
+  theme: {
+    extend: {
+      // Brand palette harvested from the source app (designTokens.colors).
+      colors: {
+        primary: '{{ colors.primary | default("#000000") }}',
+        background: '{{ colors.background | default("#ffffff") }}',
+        surface: '{{ colors.surface | default("#ffffff") }}',
+        text: '{{ colors.text | default("#000000") }}',
+      },
+    },
+  },
+  plugins: [],
+};
