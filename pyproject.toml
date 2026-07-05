@@ -13,6 +13,7 @@ dependencies = [
     "groq",
     "jsonschema",
     "python-dotenv",
+    "Jinja2",
 ]
 
 [project.optional-dependencies]
