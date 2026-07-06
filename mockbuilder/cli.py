@@ -16,6 +16,7 @@ load_dotenv()
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,31 @@ from typing import Any
 from .crawler.crawler import EVIDENCE_DIR, Crawler
 from .generator.generate import ReactGenerator
 from .reasoning.reason import synthesize_model
+from .verifier.verify import run_verification
+
+
+def _print_scorecard(scorecard: dict[str, Any]) -> None:
+    """Render the verification scorecard to the console."""
+    details = scorecard.get("details", {})
+
+    def mark(passed: bool) -> str:
+        return "[PASS]" if passed else "[FAIL]"
+
+    print("\n=== Verification Scorecard ===")
+    print(
+        f"  {mark(scorecard['P8'])} P8 Build      (readable/buildable) "
+        f"- {details.get('P8', '')}"
+    )
+    print(
+        f"  {mark(scorecard['P1'])} P1 Offline    (self-contained)    "
+        f"- {details.get('P1', '')}"
+    )
+    print(
+        f"  {mark(scorecard['P4'])} P4 Navigable  (flows connected)   "
+        f"- {details.get('P4', '')}"
+    )
+    overall = scorecard["P8"] and scorecard["P1"] and scorecard["P4"]
+    print(f"  Overall: {'GREEN (all properties pass)' if overall else 'RED'}")
 
 
 def _check_credentials() -> bool:
@@ -70,6 +96,15 @@ async def _build_pipeline(url: str, out_dir: str) -> None:
     print(
         f"Wrote {len(model.get('components', []))} component(s) and "
         f"{len(model.get('screens', []))} screen(s) under {Path(out_dir) / 'src'}"
+    )
+
+    # Phase 4: mechanically verify the generated harness (P8 build, P1 offline,
+    # P4 navigable) and print a scorecard.
+    print("Verifying generated harness ...")
+    scorecard = await run_verification(out_dir, model)
+    _print_scorecard(scorecard)
+    (Path(out_dir) / "scorecard.json").write_text(
+        json.dumps(scorecard, indent=2), encoding="utf-8"
     )
 
 
