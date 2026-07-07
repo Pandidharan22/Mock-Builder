@@ -1,20 +1,26 @@
 """Playwright agent walk: verifies P1 (offline) and P4 (navigable).
 
-Serves the built ``dist/`` locally, drives a headless Chromium through every
-declared flow, and asserts two runtime properties:
+Serves the built ``dist/`` locally (with SPA fallback so any route resolves to
+the client-side router), drives a headless Chromium through every declared flow,
+and asserts two runtime properties:
 
   * **P1 (self-contained)** — a request listener flags any request whose host is
     not localhost/127.0.0.1. A faithful mock is entirely offline after build.
-  * **P4 (navigable)** — for each flow step, click the element (prefix-matching
-    the ``testId`` so interpolated ``{id}`` instances match) and assert the
-    expected screen's ``data-testid`` (``{expectScreen}-screen``) appears.
+  * **P4 (navigable)** — for each flow, navigate to the flow's *first* screen,
+    then for each step click the element (prefix-matching the ``testId`` so
+    interpolated ``{id}`` instances match) and assert the expected screen's
+    ``data-testid`` (``{expectScreen}-screen``) appears.
 """
 
 from __future__ import annotations
 
+import functools
+import http.server
+import os
+import re
 import socket
-import subprocess
-import sys
+import socketserver
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,22 +31,43 @@ from playwright.async_api import async_playwright
 HOST = "127.0.0.1"
 PORT = 4173
 _LOCAL_HOSTS = {"localhost", "127.0.0.1"}
+_ROUTE_PARAM = re.compile(r"[:{](\w+)\}?")
 
 
-def _wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
-    """Block until ``host:port`` accepts a TCP connection, or timeout."""
+def _resolve_route(route: str) -> str:
+    """Turn a screen route into a concrete deep-link path.
+
+    Replaces route params — schema ``{id}`` or React-Router ``:id`` — with a
+    seed id (``1``) so a screen like ``/story/:id`` becomes ``/story/1``.
+    """
+    return _ROUTE_PARAM.sub("1", route or "/") or "/"
+
+
+class _SPAHandler(http.server.SimpleHTTPRequestHandler):
+    """Static handler that falls back to index.html for client-side routes."""
+
+    def do_GET(self) -> None:  # noqa: N802 (stdlib signature)
+        if not os.path.isfile(self.translate_path(self.path)):
+            self.path = "/index.html"
+        super().do_GET()
+
+    def log_message(self, *args: Any) -> None:  # silence request logging
+        pass
+
+
+def _wait_for_port(host: str, port: int, timeout: float = 15.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return True
         except OSError:
-            time.sleep(0.4)
+            time.sleep(0.3)
     return False
 
 
 async def walk_flows(out_dir: Path, app_model: dict) -> dict[str, Any]:
-    """Boot a local preview of ``out_dir/dist`` and walk the AppModel's flows.
+    """Boot a local SPA preview of ``out_dir/dist`` and walk the AppModel's flows.
 
     Returns ``{P1, P4, P1_detail, P4_detail}``.
     """
@@ -57,23 +84,12 @@ async def walk_flows(out_dir: Path, app_model: dict) -> dict[str, Any]:
         result["P1_detail"] = result["P4_detail"] = "dist/ missing (build did not run)"
         return result
 
-    # Host the built SPA locally. Python's http.server is simple and trivial to
-    # tear down; client-side routing means we never deep-link, so no SPA
-    # fallback is needed — we start at "/" and click within the app.
-    server = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "http.server",
-            str(PORT),
-            "--bind",
-            HOST,
-            "--directory",
-            str(dist_dir),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # In-process threaded static server with SPA fallback (so deep links resolve).
+    handler = functools.partial(_SPAHandler, directory=str(dist_dir))
+    socketserver.TCPServer.allow_reuse_address = True
+    httpd = socketserver.TCPServer((HOST, PORT), handler)
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
     base_url = f"http://{HOST}:{PORT}"
 
     try:
@@ -81,6 +97,7 @@ async def walk_flows(out_dir: Path, app_model: dict) -> dict[str, Any]:
             result["P1_detail"] = result["P4_detail"] = "preview server did not start"
             return result
 
+        screen_routes = {s["id"]: s.get("route", "/") for s in app_model.get("screens", [])}
         external_requests: list[str] = []
         p4_ok = True
         p4_notes: list[str] = []
@@ -102,13 +119,17 @@ async def walk_flows(out_dir: Path, app_model: dict) -> dict[str, Any]:
 
             for flow in flows:
                 flow_id = flow.get("id", "<flow>")
-                # Reset to the app root before each flow.
-                await page.goto(base_url, wait_until="networkidle")
+                steps = flow.get("steps", [])
+                if not steps:
+                    continue
 
-                for i, step in enumerate(flow.get("steps", [])):
+                # Navigate to the flow's FIRST screen (not always home).
+                start_screen = steps[0].get("screen")
+                start_route = _resolve_route(screen_routes.get(start_screen, "/"))
+                await page.goto(base_url + start_route, wait_until="networkidle")
+
+                for i, step in enumerate(steps):
                     test_id = step.get("testId", "")
-                    # Prefix match so `story-link-{id}` -> `story-link-` matches a
-                    # rendered `story-link-5`.
                     prefix = test_id.replace("{id}", "")
                     selector = f"[data-testid^='{prefix}']"
                     try:
@@ -149,8 +170,5 @@ async def walk_flows(out_dir: Path, app_model: dict) -> dict[str, Any]:
         )
         return result
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except Exception:
-            server.kill()
+        httpd.shutdown()
+        httpd.server_close()

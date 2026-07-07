@@ -197,9 +197,13 @@ class ReactGenerator:
         out_dir = self.output_dir / "src" / "screens"
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # Only components that actually exist may be imported/rendered, so a
+        # screen that references an undefined component can't break the build.
+        component_names = {c["name"] for c in self.app_model.get("components", [])}
+
         written: list[Path] = []
         for screen in self.app_model["screens"]:
-            rendered = template.render(screen=screen)
+            rendered = template.render(screen=screen, component_names=component_names)
             out_path = out_dir / f"{screen['id']}.jsx"
             out_path.write_text(rendered, encoding="utf-8")
             written.append(out_path)

@@ -4,7 +4,7 @@
 {% set comps = [] %}
 {% for region in regions %}
 {% for c in region.components or [] %}
-{% if c not in comps %}
+{% if c in component_names and c not in comps %}
 {% set _ = comps.append(c) %}
 {% endif %}
 {% endfor %}
@@ -54,13 +54,17 @@ export default function {{ component_name }}() {
         {(state['{{ region.repeatsOver }}'] || []).map((item) => (
           <Fragment key={item.id}>
 {% for c in region.components or [] %}
+{% if c in component_names %}
             <{{ c }} {...item} />
+{% endif %}
 {% endfor %}
           </Fragment>
         ))}
 {% else %}
 {% for c in region.components or [] %}
+{% if c in component_names %}
         <{{ c }} />
+{% endif %}
 {% endfor %}
 {% endif %}
       </{{ tag }}>
