@@ -37,7 +37,8 @@ def label_expr(label: str) -> str:
     """
     text = str(label)
     if _PLACEHOLDER.search(text):
-        return "`" + _PLACEHOLDER.sub(r"${props.\1}", text) + "`"
+        # Safe fallback: `${props.title || ''}` never renders "undefined".
+        return "`" + _PLACEHOLDER.sub(r"${props.\1 || ''}", text) + "`"
     return json.dumps(text)
 
 

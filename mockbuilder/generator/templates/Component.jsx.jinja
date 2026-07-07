@@ -10,6 +10,16 @@
 {% set ns.has_navigation = true %}
 {% endif %}
 {% endfor %}
+{# Fields already shown by an interactive element's label — skip them in the meta
+   row below so data isn't duplicated. #}
+{% set used = namespace(fields=[]) %}
+{% for el in elements %}
+{% for prop in component.props or [] %}
+{% if ('{' ~ prop.name ~ '}') in (el.label or '') and prop.name not in used.fields %}
+{% set _ = used.fields.append(prop.name) %}
+{% endif %}
+{% endfor %}
+{% endfor %}
 {% if ns.has_navigation %}
 import { useNavigate } from 'react-router-dom';
 {% endif %}
@@ -26,8 +36,13 @@ export default function {{ component.name }}(props) {
 {% if ns.has_mutation %}
   const { mutate } = useMockState();
 {% endif %}
+{% if component.boundToEntity %}
+{% set wrapper_class = 'flex flex-col md:flex-row md:items-center gap-4 p-4 border-b border-gray-200' %}
+{% else %}
+{% set wrapper_class = 'flex items-center gap-4 py-3 px-4 border-b border-gray-100 bg-surface' %}
+{% endif %}
   return (
-    <div data-testid="{{ component.name | lower }}" className="flex items-center gap-4 py-3 px-4 border-b border-gray-100 hover:bg-gray-50">
+    <div data-testid="{{ component.name | lower }}" className="{{ wrapper_class }}">
 {% for el in elements %}
 {% set handler = 'onChange' if el.kind in ['input', 'select'] else 'onClick' %}
 {% if '{id}' in el.testId %}
@@ -35,6 +50,8 @@ export default function {{ component.name }}(props) {
 {% else %}
 {% set testid_attr = 'data-testid="' ~ el.testId ~ '"' %}
 {% endif %}
+{# Empty label -> fall back to a humanized testId so the control isn't invisible. #}
+{% set display_label = el.label if el.label else el.testId.replace('-{id}', '').replace('{id}', '') %}
 {% set act = el.action %}
 {% set hb = namespace(parts=[]) %}
 {% if act and act.type in ['mutateState', 'navigateAndMutate'] and act.mutation %}
@@ -52,19 +69,28 @@ export default function {{ component.name }}(props) {
 {% set handler_attr = '' %}
 {% endif %}
 {% if el.kind == 'input' %}
-      <input {{ testid_attr }} placeholder={ {{ el.label | label_expr }} } className="border border-gray-300 rounded px-2 py-1 flex-1"{{ handler_attr }} />
+      <input {{ testid_attr }} placeholder={ {{ display_label | label_expr }} } className="border border-gray-300 rounded px-2 py-1 flex-1"{{ handler_attr }} />
 {% elif el.kind == 'select' %}
       <select {{ testid_attr }} className="border border-gray-300 rounded px-2 py-1"{{ handler_attr }}>
-        <option>{ {{ el.label | label_expr }} }</option>
+        <option>{ {{ display_label | label_expr }} }</option>
       </select>
 {% elif el.kind == 'link' %}
-      <a {{ testid_attr }} className="text-gray-900 hover:text-primary hover:underline cursor-pointer"{{ handler_attr }}>{ {{ el.label | label_expr }} }</a>
+      <a {{ testid_attr }} className="font-medium text-gray-900 hover:text-primary hover:underline cursor-pointer"{{ handler_attr }}>{ {{ display_label | label_expr }} }</a>
 {% elif el.kind == 'toggle' or el.kind == 'tab' %}
-      <button {{ testid_attr }} className="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:border-primary hover:text-primary cursor-pointer"{{ handler_attr }}>{ {{ el.label | label_expr }} }</button>
+      <button {{ testid_attr }} className="px-3 py-1 rounded border border-gray-300 text-sm text-gray-700 hover:border-primary hover:text-primary cursor-pointer"{{ handler_attr }}>{ {{ display_label | label_expr }} }</button>
 {% else %}
-      <button {{ testid_attr }} className="text-sm text-gray-500 hover:text-primary cursor-pointer"{{ handler_attr }}>{ {{ el.label | label_expr }} }</button>
+      <button {{ testid_attr }} className="text-sm text-gray-500 hover:text-primary cursor-pointer"{{ handler_attr }}>{ {{ display_label | label_expr }} }</button>
 {% endif %}
 {% endfor %}
+{% if component.boundToEntity and component.props %}
+      <div data-testid="{{ component.name | lower }}-meta" className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
+{% for prop in component.props %}
+{% if prop.name != 'id' and prop.name not in used.fields %}
+        <span data-testid="{{ component.name | lower }}-{{ prop.name }}">{props.{{ prop.name }} || ''}</span>
+{% endif %}
+{% endfor %}
+      </div>
+{% endif %}
     </div>
   );
 }

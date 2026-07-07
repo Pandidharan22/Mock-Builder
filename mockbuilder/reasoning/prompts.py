@@ -22,10 +22,12 @@ CRITICAL INSTRUCTIONS:
 - Every interactiveElement inside a component MUST have a populated 'action' object. If it opens a page, explicitly set type: 'navigate' and point targetScreen to the exact kebab-case screen ID. If it mutates state (like upvoting), set type: 'mutateState' with its matching store operation.
 - For elements that DISPLAY entity data (a title, price, name, points, etc.), the 'label' MUST be a field placeholder in curly braces that names a real field of the bound entity — e.g. '{title}', '{points}', '{price}' — NOT literal descriptive text like 'story title'. Only use literal text for fixed UI chrome (e.g. 'Upvote', 'Reply', 'Login').
 - A component with 'boundToEntity' set MUST include, as its FIRST interactiveElement, a primary display element (kind 'link') whose label is the entity's main text field placeholder (e.g. '{title}', '{name}', '{headline}'). The content itself must be visible — do NOT emit a row that is only action buttons.
+- STRICT DATA BINDING: If a component has 'boundToEntity', its 'props' array MUST perfectly match the fields of that entity. When defining 'repeatsOver' in a screen layout, the value MUST exactly match the singular entity name defined in your 'entities' array.
 
 3. SCREENS & EDGE STATES:
 - Define the current screen based on the visual evidence.
 - You MUST infer and declare logical edge variants even if they are not in the screenshot. There MUST be an 'empty', 'error', and 'loading' variant.
+- LIST RENDERING: When a screen shows a LIST or FEED of an entity's records (e.g. a feed of stories), the layout region that holds the entity-bound component MUST set 'repeats': true and 'repeatsOver' to that entity's exact singular name. Without this, the list will not render at all.
 
 4. DETERMINISM:
 - Every action must be declarative. Wiring must map predictable interactions to state mutations (e.g., op: 'add', store: 'saved_stories').

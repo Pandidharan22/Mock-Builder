@@ -32,6 +32,17 @@ export default function {{ component_name }}() {
 {% if ns.needs_state %}
   const { state } = useMockState();
 {% endif %}
+{# Fault-tolerant data lookup: accept singular OR plural store keys so a slight
+   naming mismatch from a text-only model still resolves the seed array. #}
+{% set repeat_entities = [] %}
+{% for region in regions %}
+{% if region.repeats and region.repeatsOver and region.repeatsOver not in repeat_entities %}
+{% set _ = repeat_entities.append(region.repeatsOver) %}
+{% endif %}
+{% endfor %}
+{% for ent in repeat_entities %}
+  const {{ ent }}_data = state['{{ ent }}'] || state['{{ ent }}s'] || [];
+{% endfor %}
 
   // Deterministic edge-state switch: ?state=<variant> forces any declared
   // variant so an agent/tester can reach every state without special data.
@@ -51,11 +62,11 @@ export default function {{ component_name }}() {
 {% set tag = tag_map.get(region.name, 'div') %}
       <{{ tag }} data-testid="{{ region.name }}-region" className="max-w-3xl mx-auto bg-surface shadow-sm">
 {% if region.repeats and region.repeatsOver %}
-        {(state['{{ region.repeatsOver }}'] || []).map((item) => (
+        { {{ region.repeatsOver }}_data.map((item) => (
           <Fragment key={item.id}>
 {% for c in region.components or [] %}
 {% if c in component_names %}
-            <{{ c }} {...item} />
+            <{{ c }} key={item.id} {...item} />
 {% endif %}
 {% endfor %}
           </Fragment>
