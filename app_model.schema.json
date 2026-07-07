@@ -174,7 +174,8 @@
             "properties": {
               "name": { "$ref": "#/$defs/identifier" },
               "type": { "type": "string" },
-              "optional": { "type": "boolean", "default": false }
+              "optional": { "type": "boolean", "default": false },
+              "uiHint": { "type": "string", "enum": ["title", "metadata", "content", "hidden"], "description": "Semantic layout priority: 'title' = primary headline, 'metadata' = secondary info (points/domain/age/author), 'content' = body text, 'hidden' = internal ids. Drives the generated visual hierarchy without a vision model." }
             }
           }
         },

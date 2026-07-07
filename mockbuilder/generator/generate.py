@@ -47,6 +47,23 @@ def route_path(route: str) -> str:
     return _PLACEHOLDER.sub(r":\1", str(route))
 
 
+_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+
+def payload_expr(payload_from: Any) -> str:
+    """Safely render a mutation's ``payloadFrom`` as a JS expression.
+
+    ``boundEntity``/empty -> the whole record (``props``); a bare field name ->
+    ``props.<field>`` (braces like ``{id}`` are stripped first); anything that
+    isn't a valid identifier falls back to ``props`` so we never emit invalid JS
+    such as ``props.{id}``.
+    """
+    if not payload_from or payload_from == "boundEntity":
+        return "props"
+    field = str(payload_from).strip().replace("{", "").replace("}", "")
+    return "props." + field if _IDENTIFIER.match(field) else "props"
+
+
 def nav_target(route: str) -> str:
     """Convert a React-Router route into a JS ``navigate()`` target expression.
 
@@ -66,6 +83,77 @@ def package_slug(name: str) -> str:
     return slug or "mock-app"
 
 
+# testId / label markers that identify a vote control (rendered left of the title).
+_VOTE_MARKERS = ("upvote", "downvote", "vote", "arrow")
+
+
+def classify_component(component: dict[str, Any]) -> dict[str, Any]:
+    """Split a component's props/elements into visual-hierarchy slots.
+
+    Uses each prop's ``uiHint`` (title / metadata / content / hidden) to decide
+    where it renders, and classifies interactive elements into vote (left of the
+    title), title (the headline link), and action (inline with metadata). Fields
+    already shown by an element's label are not repeated as plain text.
+    """
+    props = component.get("props") or []
+    elements = component.get("interactiveElements") or []
+
+    # Fields referenced by any element label (e.g. "{title}") — shown via the
+    # element, so don't also render them as plain prop text.
+    used_fields: set[str] = set()
+    for el in elements:
+        label = el.get("label") or ""
+        for p in props:
+            if "{" + p.get("name", "") + "}" in label:
+                used_fields.add(p["name"])
+
+    title_fields: list[str] = []
+    metadata_fields: list[str] = []
+    content_fields: list[str] = []
+    for p in props:
+        name = p.get("name")
+        hint = p.get("uiHint")
+        if name == "id" or hint == "hidden" or name in used_fields:
+            continue
+        if hint == "title":
+            title_fields.append(name)
+        elif hint == "content":
+            content_fields.append(name)
+        else:  # 'metadata' or unset default
+            metadata_fields.append(name)
+
+    title_field_set = {p["name"] for p in props if p.get("uiHint") == "title"}
+    vote_elements: list[dict] = []
+    title_elements: list[dict] = []
+    action_elements: list[dict] = []
+    for el in elements:
+        test_id = (el.get("testId") or "").lower()
+        label = (el.get("label") or "").strip().lower()
+        is_vote = any(m in test_id for m in _VOTE_MARKERS) or label in (
+            "upvote",
+            "downvote",
+            "vote",
+            "▲",
+            "▼",
+        )
+        is_title = any("{" + tf + "}" in (el.get("label") or "") for tf in title_field_set)
+        if is_vote:
+            vote_elements.append(el)
+        elif is_title:
+            title_elements.append(el)
+        else:
+            action_elements.append(el)
+
+    return {
+        "title_fields": title_fields,
+        "metadata_fields": metadata_fields,
+        "content_fields": content_fields,
+        "vote_elements": vote_elements,
+        "title_elements": title_elements,
+        "action_elements": action_elements,
+    }
+
+
 class ReactGenerator:
     """Renders a validated AppModel into a React harness under ``output_dir``."""
 
@@ -83,6 +171,7 @@ class ReactGenerator:
         self.env.filters["label_expr"] = label_expr
         self.env.filters["route_path"] = route_path
         self.env.filters["nav_target"] = nav_target
+        self.env.filters["payload_expr"] = payload_expr
 
     def _write(self, template_name: str, relpath: str, **context: Any) -> Path:
         """Render ``template_name`` and write it to ``output_dir/relpath``."""
@@ -143,11 +232,22 @@ class ReactGenerator:
         return False
 
     def _inject_flow_actions(
-        self, component: dict[str, Any], flow_lookup: dict[str, str], screen_ids: set
+        self,
+        component: dict[str, Any],
+        flow_lookup: dict[str, str],
+        screen_ids: set,
+        home_screen: str | None = None,
     ) -> dict[str, Any]:
-        """Return a copy of ``component`` where elements lacking a real action
-        get a synthetic ``navigate`` action derived from the flows graph."""
+        """Return a copy of ``component`` with synthetic navigation for elements
+        the model left inert.
+
+        Two deterministic fallbacks, in order: (1) if the element's testId appears
+        in the flows graph, navigate to that flow target; (2) for a *chrome*
+        component (no ``boundToEntity``), any inert LINK navigates to the home
+        screen — so nav bars always function instead of being dead links.
+        """
         enriched = copy.deepcopy(component)
+        is_chrome = not enriched.get("boundToEntity")
         for el in enriched.get("interactiveElements", []):
             action = el.get("action") or {}
             if action.get("type") and action.get("type") != "none":
@@ -162,6 +262,13 @@ class ReactGenerator:
                         break
             if target and target in screen_ids:
                 el["action"] = {"type": "navigate", "targetScreen": target}
+            elif (
+                is_chrome
+                and el.get("kind") == "link"
+                and home_screen
+                and home_screen in screen_ids
+            ):
+                el["action"] = {"type": "navigate", "targetScreen": home_screen}
         return enriched
 
     def generate_components(self) -> list[Path]:
@@ -179,13 +286,25 @@ class ReactGenerator:
         screen_ids = set(screen_routes)
         flow_lookup = self._flow_action_lookup()
 
+        # The home/primary screen: prefer the '/' route, else the first screen.
+        # Inert nav links fall back to navigating here.
+        screens = self.app_model.get("screens", [])
+        home_screen = next(
+            (s["id"] for s in screens if s.get("route") == "/"),
+            screens[0]["id"] if screens else None,
+        )
+
         written: list[Path] = []
         for component in self.app_model.get("components", []):
-            # Deterministically wire navigation from the flows graph for any
-            # element the model left without an action.
-            enriched = self._inject_flow_actions(component, flow_lookup, screen_ids)
+            # Deterministically wire navigation: from the flows graph, and for
+            # inert chrome nav links, to the home screen.
+            enriched = self._inject_flow_actions(
+                component, flow_lookup, screen_ids, home_screen
+            )
             rendered = template.render(
-                component=enriched, screen_routes=screen_routes
+                component=enriched,
+                screen_routes=screen_routes,
+                hierarchy=classify_component(enriched),
             )
             out_path = out_dir / f"{component['name']}.jsx"
             out_path.write_text(rendered, encoding="utf-8")
