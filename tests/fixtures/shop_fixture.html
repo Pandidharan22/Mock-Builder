@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fixture: product grid</title>
+  <style>
+    body { font-family: system-ui, sans-serif; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { border: 1px solid #eee; border-radius: 8px; padding: 12px; }
+    .card img { width: 100%; height: 120px; object-fit: cover; }
+    .name { display: block; font-weight: 600; }
+    .price { color: #0c831f; font-weight: 700; }
+    .unit { color: #7e808c; font-size: 12px; }
+    button { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <!--
+    A product grid: every card shares the same subtree shape, so the detector
+    finds one repeating group of six with no split rows. Class names are
+    cosmetic; the detector never reads them.
+  -->
+  <div class="grid">
+    <div class="card">
+      <img src="milk.png" alt="milk">
+      <div><span class="name">Amul Taaza Toned Milk 500 ml Pouch</span></div>
+      <div><span class="price">₹52</span> <span class="unit">/ pouch</span></div>
+      <button>ADD</button>
+    </div>
+    <div class="card">
+      <img src="atta.png" alt="atta">
+      <div><span class="name">Aashirvaad Whole Wheat Atta 5 kg Bag</span></div>
+      <div><span class="price">₹315</span> <span class="unit">/ bag</span></div>
+      <button>ADD</button>
+    </div>
+    <div class="card">
+      <img src="salt.png" alt="salt">
+      <div><span class="name">Tata Salt Iodized Vacuum Evaporated 1 kg</span></div>
+      <div><span class="price">₹28</span> <span class="unit">/ pack</span></div>
+      <button>ADD</button>
+    </div>
+    <div class="card">
+      <img src="oil.png" alt="oil">
+      <div><span class="name">Fortune Sunlite Refined Sunflower Oil 1 L</span></div>
+      <div><span class="price">₹180</span> <span class="unit">/ bottle</span></div>
+      <button>ADD</button>
+    </div>
+    <div class="card">
+      <img src="coffee.png" alt="coffee">
+      <div><span class="name">Nescafe Classic Instant Coffee 100 g Jar</span></div>
+      <div><span class="price">₹630</span> <span class="unit">/ jar</span></div>
+      <button>ADD</button>
+    </div>
+    <div class="card">
+      <img src="cookies.png" alt="cookies">
+      <div><span class="name">Britannia Good Day Cashew Cookies 250 g</span></div>
+      <div><span class="price">₹45</span> <span class="unit">/ pack</span></div>
+      <button>ADD</button>
+    </div>
+  </div>
+</body>
+</html>

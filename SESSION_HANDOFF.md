@@ -92,3 +92,15 @@ The PoC IS the blueprint for Phase 1′.
 - `mockbuilder/reasoning/prompts.py`, `reason.py` — Phase 2′ targets
 - `mockbuilder/generator/generate.py` + `templates/` — Phase 3′ targets
 - `app_model.schema.json` — the contract; gets store/state additions in Phase 3′
+
+## Known quantities (observed, not bugs)
+- Records carry a duplicated `domain` field on HN (domain link renders twice
+  in the DOM). Harmless. Normalize at field level in Phase 3′, not in the
+  extractor's detection logic.
+- The structural `signature` is per-page, not a stable app-level identity.
+  Two states of the same app legitimately produce different signatures.
+  Nothing downstream may key off signature equality to identify an entity.
+- Record API is dataclasses (attribute access: `f.role`, `rec.fields`).
+  `records.json` is written via a `to_dict()` serialization boundary.
+- Live HN: front page → 30 records; /jobs → 28 records, shortening gracefully
+  (score/author/comment_count simply absent; no field-stealing, no corruption).
