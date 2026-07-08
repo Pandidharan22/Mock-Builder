@@ -104,3 +104,16 @@ The PoC IS the blueprint for Phase 1′.
   `records.json` is written via a `to_dict()` serialization boundary.
 - Live HN: front page → 30 records; /jobs → 28 records, shortening gracefully
   (score/author/comment_count simply absent; no field-stealing, no corruption).
+
+- records.py has TWO entrypoints over ONE pure transform:
+  extract_records (sync) / extract_records_async (async) both call
+  build_result_from_raw(raw). The crawler is async and uses the async one.
+  build_result_from_raw is the browser-free regression anchor — test the
+  algorithm against it, not through a browser.
+- records.json sentinels are distinguishable BY VALUE, not just by log level:
+    signature: ""    -> legitimate page with no repeating collection (INFO only)
+    signature: null  -> extraction crashed, isolated so the crawl survives (ERROR)
+  Anything downstream that reads records.json must treat both as "no records"
+  but must not conflate them when diagnosing.
+- Crawl output (evidence/) is derived data, not tracked. Live crawls go to a
+  scratch dir. tests/fixtures/ is the only tracked thing under test paths.
