@@ -117,3 +117,23 @@ The PoC IS the blueprint for Phase 1′.
   but must not conflate them when diagnosing.
 - Crawl output (evidence/) is derived data, not tracked. Live crawls go to a
   scratch dir. tests/fixtures/ is the only tracked thing under test paths.
+
+- ExtractionResult is `collections[]`, ranked by score desc. `rank` is a
+  POSITION, not a verdict. There is deliberately NO `primary` flag: choosing the
+  primary entity is semantic judgment and belongs to the reasoning step. A test
+  enforces the absence of that key in the wire format.
+- Two dedup rules keep the candidate list honest:
+    nesting     — if every member of A sits inside some member of B, keep the
+                  higher-scored one. (Kills redundant per-item wrappers.)
+    absorption  — drop any collection whose members were already folded into a
+                  higher-scored collection by the adjacent-sibling merge.
+                  (Without this, the merge and collections[] contradict: HN's
+                  subtext rows would be emitted both merged AND standalone.
+                  Real HN yields ~10 raw candidates; absorption collapses to 1.)
+- LATENT RISK, not yet a bug: absorption drops by score order. A genuinely
+  interesting sub-collection nested inside a *lower*-scored parent could be
+  suppressed. No current fixture exercises this. If a real page ever returns
+  fewer collections than expected, suspect absorption first.
+- Sentinels at top level:
+    {"collections": []}                  -> legitimate: no repeating collection (INFO)
+    {"collections": [], "error": true}   -> extraction crashed, crawl survived (ERROR)
