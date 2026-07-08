@@ -29,8 +29,16 @@ Algorithm (productionized from ``repeating_extractor_poc.py``):
    ready-made seed data for the generator.
 
 Public API:
-    extract_records(page) -> ExtractionResult
-    infer_role(field)     -> str
+    extract_records(page)       -> ExtractionResult   # sync Playwright Page
+    extract_records_async(page) -> ExtractionResult   # async Playwright Page
+    infer_role(field)           -> str
+
+Both entrypoints do the same two things — evaluate ``_DETECTOR_JS`` in the page,
+then hand the returned dict to :func:`build_result_from_raw`. That transform is
+the *single*, pure (no Playwright, no I/O, no ``await``) definition of how raw
+detector output becomes typed dataclasses, so the sync and async paths can never
+drift. The crawler is async and uses :func:`extract_records_async`; the sync
+path exists for isolated/fixture use.
 
 ``ExtractionResult`` is the crawler's in-memory shape; call ``.to_dict()`` to
 get the JSON wire format written to ``records.json`` (recurses through
@@ -44,7 +52,15 @@ import re
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any, TypedDict
 
-__all__ = ["Field", "Record", "ExtractionResult", "extract_records", "infer_role"]
+__all__ = [
+    "Field",
+    "Record",
+    "ExtractionResult",
+    "build_result_from_raw",
+    "extract_records",
+    "extract_records_async",
+    "infer_role",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -242,21 +258,21 @@ def infer_role(field: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Public entry point
+# The one pure transform (shared by both entrypoints)
 # --------------------------------------------------------------------------- #
-def extract_records(page: Any) -> ExtractionResult:
-    """Extract the primary repeating collection from a settled Playwright page.
+def build_result_from_raw(raw: dict[str, Any]) -> ExtractionResult:
+    """Turn the ``_DETECTOR_JS`` output into typed dataclasses. **Pure.**
 
-    ``page`` is a live *sync* Playwright ``Page`` that has already been
-    navigated and allowed to settle. Runs the in-page detector, applies role
-    inference to every leaf, and returns typed records.
+    Takes the dict returned by ``page.evaluate(_DETECTOR_JS)`` — shaped like
+    ``{"count", "records": [[rawfield, ...], ...], "signature"}`` — applies role
+    inference to every leaf, and assembles the ``ExtractionResult``. No
+    Playwright, no I/O, no ``await``: this is the single definition of the
+    transform, so the sync and async entrypoints cannot diverge, and it is the
+    algorithm's browser-free regression anchor.
 
-    Returns an ``ExtractionResult`` with ``count == 0`` and ``records == []``
-    when the page has no detectable repeating structure (never raises for that
-    case).
+    Returns ``count == 0`` / ``records == []`` when ``raw`` has no records
+    (never raises for that case).
     """
-    raw: dict[str, Any] = page.evaluate(_DETECTOR_JS)
-
     records: list[Record] = []
     field_count = 0
     for i, raw_fields in enumerate(raw.get("records", [])):
@@ -280,3 +296,27 @@ def extract_records(page: Any) -> ExtractionResult:
         records=records,
         signature=raw.get("signature", ""),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Public entry points — thin seams over the detector + the pure transform.
+# --------------------------------------------------------------------------- #
+def extract_records(page: Any) -> ExtractionResult:
+    """Extract the primary repeating collection from a settled *sync* page.
+
+    ``page`` is a live *sync* Playwright ``Page`` that has already been
+    navigated and allowed to settle. Evaluates the detector, then delegates to
+    :func:`build_result_from_raw`. Returns ``count == 0`` when the page has no
+    detectable repeating structure (never raises for that case).
+    """
+    raw: dict[str, Any] = page.evaluate(_DETECTOR_JS)
+    return build_result_from_raw(raw)
+
+
+async def extract_records_async(page: Any) -> ExtractionResult:
+    """Async counterpart of :func:`extract_records` for an *async* Playwright
+    ``Page``. Awaits the detector evaluation, then delegates to the identical
+    pure :func:`build_result_from_raw` — same records, roles, and signature as
+    the sync path for the same page."""
+    raw: dict[str, Any] = await page.evaluate(_DETECTOR_JS)
+    return build_result_from_raw(raw)

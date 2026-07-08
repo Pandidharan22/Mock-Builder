@@ -20,7 +20,11 @@ import pytest
 
 from mockbuilder.crawler.records import (
     ExtractionResult,
+    Field,
+    Record,
+    build_result_from_raw,
     extract_records,
+    extract_records_async,
     infer_role,
 )
 
@@ -166,6 +170,112 @@ def test_extraction_is_deterministic(browser):
     first = _extract(browser, HN_FIXTURE)
     second = _extract(browser, HN_FIXTURE)
     assert first == second
+
+
+# --------------------------------------------------------------------------- #
+# Pure transform — build_result_from_raw is the browser-free regression anchor
+# --------------------------------------------------------------------------- #
+# A canned detector payload (exactly what page.evaluate(_DETECTOR_JS) returns):
+# two records covering rank/title/domain/score and image/title/price, plus an
+# optional href that must survive and an absent one that must stay None.
+_CANNED_RAW = {
+    "count": 2,
+    "records": [
+        [
+            {"tag": "td", "text": "1."},
+            {"tag": "a", "text": "A sufficiently long headline here", "href": "/x"},
+            {"tag": "span", "text": "github.com"},
+            {"tag": "span", "text": "100 points"},
+        ],
+        [
+            {"tag": "img", "text": "[img]", "src": "p.png"},
+            {"tag": "span", "text": "Amul Taaza Toned Milk 500 ml Pouch"},
+            {"tag": "span", "text": "₹52"},
+        ],
+    ],
+    "signature": "DIV>DIV(IMG,SPAN,SPAN)",
+}
+
+_EXPECTED_RESULT = ExtractionResult(
+    count=2,
+    field_count=7,
+    signature="DIV>DIV(IMG,SPAN,SPAN)",
+    records=[
+        Record(
+            index=0,
+            fields=[
+                Field(tag="td", text="1.", role="rank"),
+                Field(
+                    tag="a",
+                    text="A sufficiently long headline here",
+                    role="title",
+                    href="/x",
+                ),
+                Field(tag="span", text="github.com", role="domain"),
+                Field(tag="span", text="100 points", role="score"),
+            ],
+        ),
+        Record(
+            index=1,
+            fields=[
+                Field(tag="img", text="[img]", role="image", src="p.png"),
+                Field(
+                    tag="span",
+                    text="Amul Taaza Toned Milk 500 ml Pouch",
+                    role="title",
+                ),
+                Field(tag="span", text="₹52", role="price"),
+            ],
+        ),
+    ],
+)
+
+
+def test_build_result_from_raw_is_pure_and_exact():
+    """No browser: the transform must produce exactly this ExtractionResult.
+    This is the algorithm's regression anchor from here on."""
+    assert build_result_from_raw(_CANNED_RAW) == _EXPECTED_RESULT
+
+
+def test_build_result_from_raw_empty():
+    """A payload with no records yields a valid empty result, never raises."""
+    result = build_result_from_raw({"count": 0, "records": [], "signature": ""})
+    assert result == ExtractionResult(count=0, field_count=0, records=[], signature="")
+
+
+# --------------------------------------------------------------------------- #
+# Async parity — extract_records_async must equal the sync path exactly
+# --------------------------------------------------------------------------- #
+async def _extract_async(fixture: Path) -> ExtractionResult:
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        b = await p.chromium.launch(headless=True)
+        try:
+            page = await b.new_page()
+            await page.goto(fixture.resolve().as_uri(), wait_until="load")
+            return await extract_records_async(page)
+        finally:
+            await b.close()
+
+
+def _run_async(fixture: Path) -> ExtractionResult:
+    """Run the async extraction on its own thread. The module-scoped sync
+    ``browser`` fixture keeps a Playwright asyncio loop live on the main thread,
+    so ``asyncio.run`` must execute where no loop is already running."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(_extract_async(fixture))).result()
+
+
+@pytest.mark.parametrize("fixture", [HN_FIXTURE, SHOP_FIXTURE])
+def test_async_matches_sync_exactly(browser, fixture):
+    """Same page, same transform → identical records, roles, and signature."""
+    sync_result = _extract(browser, fixture)
+    async_result = _run_async(fixture)
+    assert async_result == sync_result
 
 
 # --------------------------------------------------------------------------- #

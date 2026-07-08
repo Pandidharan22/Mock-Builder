@@ -9,6 +9,7 @@ instead of looping forever.
 For every newly-seen state we persist:
   * ``evidence/{state_hash}.png``            — full-page screenshot
   * ``evidence/{state_hash}_elements.json``  — discovered actionable elements
+  * ``evidence/{state_hash}_records.json``   — extracted repeating-unit records
   * ``evidence/design_tokens.json``          — harvested computed styles
   * ``evidence/fixtures/*.json``             — captured JSON API responses
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,9 @@ from playwright.async_api import async_playwright
 from ..recorder.design_tokens import harvest_tokens, save_tokens
 from ..recorder.network import attach_network_listener
 from .dom import discover_elements, normalize_dom
+from .records import extract_records_async
+
+logger = logging.getLogger(__name__)
 
 # Project root is two levels above this file: <root>/mockbuilder/crawler/crawler.py
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -123,6 +128,37 @@ class Crawler:
             tokens = await harvest_tokens(page)
             tokens_path = save_tokens(tokens, self.evidence_dir)
 
+            # Extract the page's real records (the DATA track). This must NEVER
+            # abort a crawl: on any failure we log ERROR and still write a valid
+            # empty file (distinguished by signature=null + the ERROR log). A
+            # page that legitimately has no repeating collection returns count=0
+            # without raising — same empty shape, but no ERROR and signature="".
+            records_path = self.evidence_dir / f"{state_hash}_records.json"
+            try:
+                extraction = await extract_records_async(page)
+                records_payload = extraction.to_dict()
+                logger.info(
+                    "records: state=%s count=%d signature=%s",
+                    state_hash,
+                    extraction.count,
+                    extraction.signature,
+                )
+            except Exception:
+                logger.error(
+                    "record extraction failed for state=%s; writing empty result",
+                    state_hash,
+                    exc_info=True,
+                )
+                records_payload = {
+                    "count": 0,
+                    "field_count": 0,
+                    "records": [],
+                    "signature": None,
+                }
+            records_path.write_text(
+                json.dumps(records_payload, indent=2), encoding="utf-8"
+            )
+
             # Queue follow-up states: a few clickable elements to branch on.
             for selector in self._pick_branch_selectors(elements):
                 queue.append({"url": base_url, "clicks": clicks + [selector]})
@@ -133,6 +169,7 @@ class Crawler:
                 "state_hash": state_hash,
                 "screenshot": str(screenshot_path),
                 "elements": str(elements_path),
+                "records": str(records_path),
                 "design_tokens": str(tokens_path),
                 "element_count": len(elements),
             }
