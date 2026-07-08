@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Multi-collection fixture</title>
+</head>
+<body>
+  <!--
+    Two structurally-unrelated repeating groups on one page:
+      * a category strip: 7 items, 1 text field each  -> low score (7)
+      * a product grid:   6 cards, 4 fields each       -> high score (24)
+    Each product card wraps its content in a redundant inner element, producing a
+    SECOND structurally-identical group nested one-to-one inside the cards. The
+    detector's dedup must suppress that inner group so the page yields exactly
+    TWO collections (grid first, strip second), not three.
+  -->
+  <nav class="categories">
+    <ul>
+      <li><span>Fruits and Vegetables</span></li>
+      <li><span>Dairy and Bakery</span></li>
+      <li><span>Staples and Grains</span></li>
+      <li><span>Snacks and Munchies</span></li>
+      <li><span>Cold Drinks and Juices</span></li>
+      <li><span>Home and Kitchen</span></li>
+      <li><span>Personal Care Items</span></li>
+    </ul>
+  </nav>
+
+  <main>
+    <div class="products">
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/milk.png" alt="">
+          <h3>Amul Taaza Toned Milk 500 ml Pouch</h3>
+          <span class="price">&#8377;52</span>
+          <span class="unit">/ pouch</span>
+        </div>
+      </article>
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/atta.png" alt="">
+          <h3>Aashirvaad Whole Wheat Atta 5 kg Bag</h3>
+          <span class="price">&#8377;315</span>
+          <span class="unit">/ bag</span>
+        </div>
+      </article>
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/salt.png" alt="">
+          <h3>Tata Salt Iodized Vacuum Evaporated 1 kg</h3>
+          <span class="price">&#8377;28</span>
+          <span class="unit">/ pack</span>
+        </div>
+      </article>
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/oil.png" alt="">
+          <h3>Fortune Sunlite Refined Sunflower Oil 1 L</h3>
+          <span class="price">&#8377;180</span>
+          <span class="unit">/ bottle</span>
+        </div>
+      </article>
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/coffee.png" alt="">
+          <h3>Nescafe Classic Instant Coffee 100 g Jar</h3>
+          <span class="price">&#8377;630</span>
+          <span class="unit">/ jar</span>
+        </div>
+      </article>
+      <article class="product">
+        <div class="product-inner">
+          <img src="img/cookies.png" alt="">
+          <h3>Britannia Good Day Cashew Cookies 250 g</h3>
+          <span class="price">&#8377;45</span>
+          <span class="unit">/ pack</span>
+        </div>
+      </article>
+    </div>
+  </main>
+</body>
+</html>

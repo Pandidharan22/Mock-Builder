@@ -130,18 +130,22 @@ class Crawler:
 
             # Extract the page's real records (the DATA track). This must NEVER
             # abort a crawl: on any failure we log ERROR and still write a valid
-            # empty file (distinguished by signature=null + the ERROR log). A
-            # page that legitimately has no repeating collection returns count=0
-            # without raising — same empty shape, but no ERROR and signature="".
+            # sentinel. The two empty paths stay distinguishable by value:
+            #   * legitimate empty  -> {"collections": []}               , INFO only
+            #   * extraction crashed -> {"collections": [], "error": true}, ERROR logged
             records_path = self.evidence_dir / f"{state_hash}_records.json"
             try:
                 extraction = await extract_records_async(page)
                 records_payload = extraction.to_dict()
+                summary = "; ".join(
+                    f"[{c.rank}] count={c.count} score={c.score:g} sig={c.signature}"
+                    for c in extraction.collections
+                )
                 logger.info(
-                    "records: state=%s count=%d signature=%s",
+                    "records: state=%s collections=%d %s",
                     state_hash,
-                    extraction.count,
-                    extraction.signature,
+                    len(extraction.collections),
+                    summary,
                 )
             except Exception:
                 logger.error(
@@ -149,12 +153,7 @@ class Crawler:
                     state_hash,
                     exc_info=True,
                 )
-                records_payload = {
-                    "count": 0,
-                    "field_count": 0,
-                    "records": [],
-                    "signature": None,
-                }
+                records_payload = {"collections": [], "error": True}
             records_path.write_text(
                 json.dumps(records_payload, indent=2), encoding="utf-8"
             )

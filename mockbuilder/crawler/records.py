@@ -11,22 +11,27 @@ boundary between them:
     so it is left to the reasoning stage.
 
 This module owns the DATA track. It never talks to a model, never invents a
-row, and contains **no app-specific selectors** — it finds the page's primary
-repeating collection purely from structure, so the identical code extracts
-Hacker News stories and grocery products alike.
+row, and contains **no app-specific selectors** — it finds every repeating
+collection purely from structure, so the identical code extracts Hacker News
+stories and grocery products alike.
+
+It emits *all* qualifying collections ranked by score, and deliberately does not
+pick which one is the main entity: that is semantic judgment reserved for the
+reasoning stage.
 
 Algorithm (productionized from ``repeating_extractor_poc.py``):
 
 1. Give every element a data-independent structural *signature* (its subtree
    tag-shape, capped in depth). Sibling elements that share a signature are
    repetition candidates.
-2. The largest group of structurally-identical, text-rich siblings is the
-   page's primary collection — the repeating unit.
+2. Every group of >= 3 structurally-identical, text-rich siblings becomes a
+   candidate collection, scored by ``size * min(leaf_richness, 8)``.
 3. Merge each unit with an adjacent non-group sibling, to handle split rows
    (e.g. a title row followed by a separate metadata row).
-4. Type each leaf with deterministic Python role inference
-   (title / price / age / domain / ...). The result is clean typed records —
-   ready-made seed data for the generator.
+4. Rank collections by score descending and drop ones nested inside another
+   (same region at a different depth). Type each leaf with deterministic Python
+   role inference (title / price / age / domain / ...). The result is clean
+   typed records per collection — ready-made seed data for the generator.
 
 Public API:
     extract_records(page)       -> ExtractionResult   # sync Playwright Page
@@ -55,6 +60,7 @@ from typing import Any, TypedDict
 __all__ = [
     "Field",
     "Record",
+    "Collection",
     "ExtractionResult",
     "build_result_from_raw",
     "extract_records",
@@ -98,7 +104,7 @@ class Field:
 
 @dataclass
 class Record:
-    """One instance of the page's repeating unit."""
+    """One instance of a collection's repeating unit."""
 
     index: int
     fields: list[Field] = dataclass_field(default_factory=list)
@@ -108,32 +114,56 @@ class Record:
 
 
 @dataclass
-class ExtractionResult:
-    """The outcome of extracting the primary repeating collection from a page.
+class Collection:
+    """One repeating collection detected on the page.
 
-    ``field_count`` is the total number of typed fields across every record.
-    ``signature`` is the winning group's key (parent-tag + subtree tag-shape);
-    it is empty when no repeating group was found.
+    ``rank`` is a *position*, not a verdict: collections are sorted by ``score``
+    descending and ``rank`` is the 0-based index after that sort. The extractor
+    deliberately does NOT decide which collection is the main entity — that is
+    semantic judgment reserved for the reasoning stage. ``score`` is the raw
+    group score (``member_count * min(leaf_richness, 8)``); ``signature`` is the
+    group's structural key (parent-tag + subtree tag-shape).
     """
 
+    rank: int
+    score: float
+    signature: str
     count: int
     field_count: int
     records: list[Record] = dataclass_field(default_factory=list)
-    signature: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rank": self.rank,
+            "score": self.score,
+            "signature": self.signature,
+            "count": self.count,
+            "field_count": self.field_count,
+            "records": [r.to_dict() for r in self.records],
+        }
+
+
+@dataclass
+class ExtractionResult:
+    """All repeating collections found on a page, ranked by score descending.
+
+    ``collections`` may be empty when the page has no repeating structure. There
+    is intentionally no main-entity flag and no top-level record list: choosing
+    the main entity from these ranked candidates is the reasoning stage's job.
+    """
+
+    collections: list[Collection] = dataclass_field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """The wire format written to ``records.json``.
 
         The dataclass is the crawler's in-memory API; this dict is what every
-        downstream stage consumes. Recurses through ``Record``/``Field`` and
-        drops ``None`` optional keys.
+        downstream stage consumes. Recurses through
+        ``Collection``/``Record``/``Field`` and drops ``None`` optional keys.
+        ``{"collections": []}`` is the legitimate "no collection" sentinel; the
+        crawler adds ``"error": true`` only on the extraction-crash path.
         """
-        return {
-            "count": self.count,
-            "field_count": self.field_count,
-            "records": [r.to_dict() for r in self.records],
-            "signature": self.signature,
-        }
+        return {"collections": [c.to_dict() for c in self.collections]}
 
 
 # --------------------------------------------------------------------------- #
@@ -162,19 +192,6 @@ _DETECTOR_JS = r"""
     (groups[key] = groups[key] || []).push(el);
   }
 
-  // (2) largest text-rich group wins. Score = size * (capped) leaf richness.
-  let best = null, bestKey = '', bestScore = 0;
-  for (const key in groups) {
-    const members = groups[key];
-    if (members.length < 3) continue;
-    const richness = members[0].querySelectorAll('a,span,td,p,h1,h2,h3,h4,img').length;
-    const score = members.length * Math.min(richness, 8);
-    if (score > bestScore) { bestScore = score; best = members; bestKey = key; }
-  }
-  if (!best) return { count: 0, records: [], signature: '' };
-
-  const groupSet = new Set(best);
-
   // Leaf fields of an element (text-bearing leaves plus images).
   function leavesOf(el) {
     const out = [];
@@ -191,17 +208,72 @@ _DETECTOR_JS = r"""
     return out;
   }
 
-  // (3) absorb a trailing non-group sibling (a split "metadata" row).
-  const records = best.map(m => {
-    let fields = leavesOf(m);
-    const sib = m.nextElementSibling;
-    if (sib && !groupSet.has(sib) && sib.querySelector('a,span')) {
-      fields = fields.concat(leavesOf(sib));
-    }
-    return fields;
-  }).filter(r => r.length);
+  // (2) EVERY qualifying group becomes a candidate collection (>= 3 siblings).
+  // Score is the SAME formula as before — size * (capped) leaf richness — and is
+  // NOT retuned. Records are built per-collection, each with the (3) adjacent-
+  // sibling merge that absorbs a trailing split "metadata" row.
+  const candidates = [];
+  for (const key in groups) {
+    const members = groups[key];
+    if (members.length < 3) continue;
+    const richness = members[0].querySelectorAll('a,span,td,p,h1,h2,h3,h4,img').length;
+    const score = members.length * Math.min(richness, 8);
+    const groupSet = new Set(members);
+    const absorbed = new Set();  // siblings merged in (they belong to no group)
+    const records = members.map(m => {
+      let fields = leavesOf(m);
+      const sib = m.nextElementSibling;
+      if (sib && !groupSet.has(sib) && sib.querySelector('a,span')) {
+        fields = fields.concat(leavesOf(sib));
+        absorbed.add(sib);
+      }
+      return fields;
+    }).filter(r => r.length);
+    if (!records.length) continue;
+    candidates.push({ signature: key, score, members, absorbed, records });
+  }
 
-  return { count: records.length, records, signature: bestKey };
+  // Rank by score descending. V8's sort is stable, so on a score tie the group
+  // encountered first in document order stays first — this makes collection[0]
+  // byte-identical to the previous single-winner detector.
+  candidates.sort((a, b) => b.score - a.score);
+
+  // Dedup collections that describe a region another collection already covers:
+  //   (1) NESTING — every member of A sits inside a member of B (e.g. a grid and
+  //       a redundant per-item wrapper, or a grid inside a page-wrapper);
+  //   (2) MERGE-ABSORPTION — every member of A was pulled into B's records by the
+  //       adjacent-sibling merge (e.g. a split metadata row already folded into
+  //       its title row). Emitting them again would double-count the same region.
+  // Keep the higher-scored collection; on a tie keep the outer/covering one.
+  const subsumedBy = (A, B) =>
+    A.members.every(ma => B.members.some(mb => mb !== ma && mb.contains(ma)));
+  // B absorbed A when every member of A is (or sits inside) a sibling B merged.
+  // The containment check also sweeps up the sub-structure groups of an absorbed
+  // sibling — e.g. the cells/spans inside an already-folded-in metadata row.
+  const absorbedBy = (A, B) => {
+    if (!B.absorbed.size) return false;
+    const abs = [...B.absorbed];
+    return A.members.every(ma => abs.some(s => s === ma || s.contains(ma)));
+  };
+  const coveredBy = (A, B) => subsumedBy(A, B) || absorbedBy(A, B);
+  const dropped = new Set();
+  for (let i = 0; i < candidates.length; i++) {
+    if (dropped.has(i)) continue;
+    for (let j = 0; j < candidates.length; j++) {
+      if (i === j || dropped.has(j)) continue;
+      if (coveredBy(candidates[i], candidates[j])) {
+        // i is covered by j. Drop the lower score; on a tie drop the covered (i).
+        dropped.add(candidates[i].score > candidates[j].score ? j : i);
+        if (dropped.has(i)) break;
+      }
+    }
+  }
+
+  const collections = candidates
+    .filter((_, i) => !dropped.has(i))
+    .map(c => ({ signature: c.signature, score: c.score, records: c.records }));
+
+  return { collections };
 }
 """
 
@@ -264,50 +336,59 @@ def build_result_from_raw(raw: dict[str, Any]) -> ExtractionResult:
     """Turn the ``_DETECTOR_JS`` output into typed dataclasses. **Pure.**
 
     Takes the dict returned by ``page.evaluate(_DETECTOR_JS)`` — shaped like
-    ``{"count", "records": [[rawfield, ...], ...], "signature"}`` — applies role
-    inference to every leaf, and assembles the ``ExtractionResult``. No
+    ``{"collections": [{"signature", "score", "records": [[rawfield, ...], ...]},
+    ...]}``, already ranked by score descending — applies role inference to every
+    leaf, and assembles the ``ExtractionResult``. ``rank`` is assigned here as the
+    position in that already-sorted list (a position, not a verdict). No
     Playwright, no I/O, no ``await``: this is the single definition of the
     transform, so the sync and async entrypoints cannot diverge, and it is the
     algorithm's browser-free regression anchor.
 
-    Returns ``count == 0`` / ``records == []`` when ``raw`` has no records
-    (never raises for that case).
+    Returns ``collections == []`` when ``raw`` has none (never raises).
     """
-    records: list[Record] = []
-    field_count = 0
-    for i, raw_fields in enumerate(raw.get("records", [])):
-        fields: list[Field] = []
-        for rf in raw_fields:
-            fields.append(
-                Field(
-                    tag=rf.get("tag", ""),
-                    text=rf.get("text", ""),
-                    role=infer_role(rf),
-                    href=rf.get("href"),
-                    src=rf.get("src"),
+    collections: list[Collection] = []
+    for rank, raw_col in enumerate(raw.get("collections", [])):
+        records: list[Record] = []
+        field_count = 0
+        for i, raw_fields in enumerate(raw_col.get("records", [])):
+            fields: list[Field] = []
+            for rf in raw_fields:
+                fields.append(
+                    Field(
+                        tag=rf.get("tag", ""),
+                        text=rf.get("text", ""),
+                        role=infer_role(rf),
+                        href=rf.get("href"),
+                        src=rf.get("src"),
+                    )
                 )
-            )
-        field_count += len(fields)
-        records.append(Record(index=i, fields=fields))
+            field_count += len(fields)
+            records.append(Record(index=i, fields=fields))
 
-    return ExtractionResult(
-        count=len(records),
-        field_count=field_count,
-        records=records,
-        signature=raw.get("signature", ""),
-    )
+        collections.append(
+            Collection(
+                rank=rank,
+                score=float(raw_col.get("score", 0)),
+                signature=raw_col.get("signature", ""),
+                count=len(records),
+                field_count=field_count,
+                records=records,
+            )
+        )
+
+    return ExtractionResult(collections=collections)
 
 
 # --------------------------------------------------------------------------- #
 # Public entry points — thin seams over the detector + the pure transform.
 # --------------------------------------------------------------------------- #
 def extract_records(page: Any) -> ExtractionResult:
-    """Extract the primary repeating collection from a settled *sync* page.
+    """Extract all repeating collections from a settled *sync* page.
 
     ``page`` is a live *sync* Playwright ``Page`` that has already been
     navigated and allowed to settle. Evaluates the detector, then delegates to
-    :func:`build_result_from_raw`. Returns ``count == 0`` when the page has no
-    detectable repeating structure (never raises for that case).
+    :func:`build_result_from_raw`. Returns an empty ``collections`` list when the
+    page has no detectable repeating structure (never raises for that case).
     """
     raw: dict[str, Any] = page.evaluate(_DETECTOR_JS)
     return build_result_from_raw(raw)
@@ -316,7 +397,7 @@ def extract_records(page: Any) -> ExtractionResult:
 async def extract_records_async(page: Any) -> ExtractionResult:
     """Async counterpart of :func:`extract_records` for an *async* Playwright
     ``Page``. Awaits the detector evaluation, then delegates to the identical
-    pure :func:`build_result_from_raw` — same records, roles, and signature as
-    the sync path for the same page."""
+    pure :func:`build_result_from_raw` — same collections, records, roles, and
+    signatures as the sync path for the same page."""
     raw: dict[str, Any] = await page.evaluate(_DETECTOR_JS)
     return build_result_from_raw(raw)
