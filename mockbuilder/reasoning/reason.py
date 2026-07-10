@@ -7,9 +7,12 @@ to fill the contract; the (deterministic) generator consumes it downstream.
 
 Reasoning runs on **Groq** via the OpenAI-compatible chat-completions API. To fit
 the free tier's token budget, the prompt is deliberately slim and TEXT-ONLY: the
-elements are compressed (repeating rows -> a few samples + counts), the schema is
-minified (descriptions stripped), and the base64 screenshot is dropped entirely.
-This headroom lets us run a stronger model for better schema adherence.
+model receives the minified schema (descriptions stripped), the design tokens, and
+— per detected collection — ONE representative record's typed fields (role + a
+sample text, for meaning only). It receives no screenshot and no elements dump.
+The model defines STRUCTURE only; it never emits seed data (the schema forbids a
+`seed` field on entities), which is what kills the fabrication defect. Real records
+are supplied separately by the crawler and injected downstream.
 
 Two guarantees wrap the non-deterministic call:
   * **Cache** — keyed by ``state_hash`` (see :mod:`.cache`); an unchanged crawl
@@ -73,52 +76,27 @@ MINIFIED_SCHEMA = json.dumps(
     separators=(",", ":"),
 )
 
-# --- Elements compression -------------------------------------------------
-_NTH_OF_TYPE = re.compile(r":nth-of-type\(\d+\)")
-_NUMBER = re.compile(r"\b\d+\b")
+# --- Sample-record payload -------------------------------------------------
+def build_sample_collections(records_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reduce ``records.json`` to the compact structure-only payload for the LLM.
 
-
-def _selector_signature(selector: str) -> str:
-    """Collapse a CSS selector to a structural signature so repeated rows
-    (differing only by ``:nth-of-type`` / numeric ids) map to the same key."""
-    sig = _NTH_OF_TYPE.sub(":nth-of-type(*)", selector or "")
-    return _NUMBER.sub("#", sig)
-
-
-def compress_elements(elements: list) -> list:
-    """Deduplicate repeating structural patterns in the discovered elements.
-
-    Groups elements by (tag + normalized-selector) signature. The first 3 of each
-    group are kept intact (enough to model a story/comment row as seed data); the
-    rest collapse into one summary entry carrying the count. This slashes the
-    elements payload (e.g. Hacker News ~34KB -> <4KB) so it fits the token budget
-    while preserving both representative samples and the full picture (counts).
+    For each detected collection, emit ONE representative record (the first) as an
+    ordered list of ``{role, text}`` leaves. The model sees the *shape* of a record
+    — which roles exist, in what order — with a single example text per field to
+    convey meaning, and nothing more. It never receives the full record set, so it
+    cannot transcribe data even if it wanted to.
     """
-    groups: dict[str, list] = {}
-    order: list[str] = []
-    for el in elements:
-        sig = el.get("tag", "") + "|" + _selector_signature(el.get("selector", ""))
-        if sig not in groups:
-            groups[sig] = []
-            order.append(sig)
-        groups[sig].append(el)
-
-    compressed: list = []
-    for sig in order:
-        members = groups[sig]
-        compressed.extend(members[:3])
-        extra = len(members) - 3
-        if extra > 0:
-            sample = members[0]
-            compressed.append(
-                {
-                    "tag": sample.get("tag"),
-                    "text": f"[+{extra} more similar '{sample.get('tag')}' elements]",
-                    "selector": _selector_signature(sample.get("selector", "")),
-                    "repeatedCount": len(members),
-                }
-            )
-    return compressed
+    samples: list[dict[str, Any]] = []
+    for col in records_data.get("collections", []):
+        reps = col.get("records") or []
+        if not reps:
+            continue
+        fields = [
+            {"role": f.get("role"), "text": f.get("text")}
+            for f in reps[0].get("fields", [])
+        ]
+        samples.append({"collection": col.get("rank", len(samples)), "fields": fields})
+    return samples
 
 
 def _strip_json_fences(text: str) -> str:
@@ -281,23 +259,27 @@ def verify_graph_integrity(model: dict) -> list[str]:
 async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any]:
     """Synthesize (or load from cache) a validated AppModel for one crawl state.
 
-    Reads ``{state_hash}_elements.json`` and ``{state_hash}.png`` from
-    ``evidence_dir``, calls the LLM, validates the output against the AppModel
-    schema, retries on validation failure, then caches and returns the result.
+    Reads ``{state_hash}_records.json`` (the crawler's extracted collections) and
+    ``design_tokens.json`` from ``evidence_dir``, sends the LLM a STRUCTURE-ONLY
+    prompt (schema + tokens + one representative record per collection), validates
+    the output against the AppModel schema, retries on failure, then caches and
+    returns the result. The model never sees or emits seed data.
     """
     evidence_dir = Path(evidence_dir)
 
-    # 1. Cache hit short-circuits the whole (expensive, non-deterministic) call.
-    cached = get_cached_model(state_hash, evidence_dir)
-    if cached is not None:
-        return cached
-
-    # 2. Load + compress the evidence for this state. Grouping repeating rows to
-    #    3 samples + a count shrinks the elements payload ~10x so the request fits
-    #    the free-tier token budget (and a stronger model).
-    elements_path = evidence_dir / f"{state_hash}_elements.json"
-    raw_elements = json.loads(elements_path.read_text(encoding="utf-8"))
-    elements_json = json.dumps(compress_elements(raw_elements), separators=(",", ":"))
+    # 1. Load the extracted records for this state and reduce them to the compact
+    #    structure-only payload: ONE representative record per collection, as typed
+    #    {role, text} leaves. This is an order of magnitude smaller than the old
+    #    elements dump and carries only SHAPE — never the full data.
+    records_path = evidence_dir / f"{state_hash}_records.json"
+    records_data = (
+        json.loads(records_path.read_text(encoding="utf-8"))
+        if records_path.exists()
+        else {"collections": []}
+    )
+    samples_json = json.dumps(
+        build_sample_collections(records_data), separators=(",", ":"), ensure_ascii=False
+    )
 
     # Design tokens are harvested by the crawler into a single shared file. Feed
     # them to the model so it maps *extracted* colors/fonts to semantic roles
@@ -307,10 +289,10 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
         tokens_path.read_text(encoding="utf-8") if tokens_path.exists() else "{}"
     )
 
-    # 3. Build a TEXT-ONLY prompt. The compressed elements + design tokens carry
-    #    the structural and stylistic facts, so we drop the heavy base64
-    #    screenshot entirely — the single biggest token cost.
-    client = AsyncGroq()  # picks up GROQ_API_KEY from the environment
+    # 2. Build the TEXT-ONLY, structure-only prompt. The sample records + design
+    #    tokens carry the structural and stylistic facts; there is no screenshot
+    #    and no elements dump. Built BEFORE the cache lookup because the cache key
+    #    hashes the exact prompt/payload sent (so a prompt/payload change misses).
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -325,12 +307,30 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
                 "`entities`, `screens`, `flows`; no extra top-level keys are "
                 "allowed):\n\n"
                 f"{MINIFIED_SCHEMA}\n\n"
-                f"Here is the (compressed) elements JSON:\n{elements_json}\n\n"
+                "Here is ONE representative record for each detected collection — "
+                "fields typed by role, with an example text shown ONLY to convey "
+                "each field's meaning. Define the entity SHAPE from these roles; do "
+                "NOT copy the text and do NOT emit any seed/sample data:\n"
+                f"{samples_json}\n\n"
                 f"Here are the extracted design tokens:\n{tokens_json}\n\n"
                 "Return ONLY valid AppModel JSON."
             ),
         },
     ]
+
+    # 3. Cache lookup, keyed on state_hash + a hash of the EXACT inputs sent (the
+    #    system + user message content and the pinned model). Hashing what's sent
+    #    means any prompt/payload/model change is a miss, never a stale hit. A hit
+    #    short-circuits the whole (expensive, non-deterministic) call.
+    system_content = messages[0]["content"]
+    user_content = messages[1]["content"]
+    cached = get_cached_model(
+        state_hash, system_content, user_content, MODEL, evidence_dir
+    )
+    if cached is not None:
+        return cached
+
+    client = AsyncGroq()  # picks up GROQ_API_KEY from the environment
 
     # 4. Validate-retry loop. Groq supports temperature=0 for determinism.
     #    `base_messages` is the fixed [system, user] prefix; on each failure we
@@ -378,8 +378,10 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
             ]
             continue
 
-        # 5. Success: cache and return.
-        save_cached_model(state_hash, candidate, evidence_dir)
+        # 5. Success: cache (under the inputs-addressed key) and return.
+        save_cached_model(
+            state_hash, candidate, system_content, user_content, MODEL, evidence_dir
+        )
         return candidate
 
     raise RuntimeError(

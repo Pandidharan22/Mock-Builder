@@ -126,7 +126,7 @@
 
     "entity": {
       "type": "object",
-      "required": ["name", "fields", "seed"],
+      "required": ["name", "fields"],
       "additionalProperties": false,
       "properties": {
         "name": { "$ref": "#/$defs/identifier", "description": "Singular entity name, e.g. 'product'." },
@@ -149,11 +149,6 @@
               "optional": { "type": "boolean", "default": false }
             }
           }
-        },
-        "seed": {
-          "type": "array",
-          "description": "Concrete seed records used as the local dataset. Must be deterministic (no random generation at runtime). Enough rows to make the UI look real (e.g. 8-20 products).",
-          "items": { "type": "object" }
         }
       }
     },
