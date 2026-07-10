@@ -83,7 +83,13 @@ _VALID_MODEL = {
         "spacing": {},
         "radii": {},
     },
-    "entities": [{"name": "story", "fields": [{"name": "title", "type": "string"}]}],
+    "entities": [
+        {
+            "name": "story",
+            "fields": [{"name": "title", "type": "string"}],
+            "sourceCollection": 0,
+        }
+    ],
     "screens": [
         {
             "id": "home",

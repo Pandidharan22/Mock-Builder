@@ -126,7 +126,7 @@
 
     "entity": {
       "type": "object",
-      "required": ["name", "fields"],
+      "required": ["name", "fields", "sourceCollection"],
       "additionalProperties": false,
       "properties": {
         "name": { "$ref": "#/$defs/identifier", "description": "Singular entity name, e.g. 'product'." },
@@ -149,7 +149,8 @@
               "optional": { "type": "boolean", "default": false }
             }
           }
-        }
+        },
+        "sourceCollection": { "type": "integer", "minimum": 0, "description": "Index (rank) of the extracted collection this entity was derived from. Links the entity to its records for deterministic seed injection downstream. It is an index, NOT data." }
       }
     },
 

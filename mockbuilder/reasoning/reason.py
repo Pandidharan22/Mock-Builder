@@ -80,11 +80,18 @@ MINIFIED_SCHEMA = json.dumps(
 def build_sample_collections(records_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Reduce ``records.json`` to the compact structure-only payload for the LLM.
 
-    For each detected collection, emit ONE representative record (the first) as an
-    ordered list of ``{role, text}`` leaves. The model sees the *shape* of a record
-    — which roles exist, in what order — with a single example text per field to
-    convey meaning, and nothing more. It never receives the full record set, so it
-    cannot transcribe data even if it wanted to.
+    For each detected collection, emit its ``rank`` (as ``collection``), its
+    instance ``count``, and ONE representative record (the first) as an ordered
+    list of ``{role, text}`` leaves. The model sees the *shape* of a record —
+    which roles exist, in what order — plus how many instances the collection has,
+    with a single example text per field to convey meaning, and nothing more. It
+    never receives the full record set, so it cannot transcribe data.
+
+    ``count`` is load-bearing for primary-collection selection: a content
+    collection tends to have many instances, a nav strip few. Raw ``score`` is
+    deliberately NOT forwarded (redundant with rank; its magnitude is meaningless
+    extractor arithmetic), nor is ``field_count`` (derivable from ``fields``).
+    Collections stay ordered score-descending (rank 0 first).
     """
     samples: list[dict[str, Any]] = []
     for col in records_data.get("collections", []):
@@ -95,7 +102,13 @@ def build_sample_collections(records_data: dict[str, Any]) -> list[dict[str, Any
             {"role": f.get("role"), "text": f.get("text")}
             for f in reps[0].get("fields", [])
         ]
-        samples.append({"collection": col.get("rank", len(samples)), "fields": fields})
+        samples.append(
+            {
+                "collection": col.get("rank", len(samples)),
+                "count": col.get("count", len(reps)),
+                "fields": fields,
+            }
+        )
     return samples
 
 
