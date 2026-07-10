@@ -77,15 +77,46 @@ MINIFIED_SCHEMA = json.dumps(
 )
 
 # --- Sample-record payload -------------------------------------------------
+def _distinct_role_count(record: dict[str, Any]) -> int:
+    """Number of DISTINCT non-empty typed roles in one record. This measures how
+    *complete* a record is — a row exhibiting title+domain+score+age+comments is
+    more representative of the collection's shape than one missing several."""
+    return len(
+        {f.get("role") for f in record.get("fields", []) if f.get("role") and f.get("text")}
+    )
+
+
+def _representative_record(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the MOST-COMPLETE real record — the one with the most distinct roles.
+
+    The entity shape is derived from a single sample, so sampling ``records[0]``
+    corrupts the shape whenever row 0 is atypical (a short title mis-roled as
+    meta, a missing optional field) and makes the shape order-dependent. Choosing
+    the fullest record maximizes the roles the model sees. It is ONE real record —
+    never a union of roles across records, which would fabricate a shape no real
+    instance has. Tie-break: the LOWEST index among records with the max distinct-
+    role count (strict ``>`` keeps the first-seen maximum), so the choice is fully
+    deterministic — identical input always yields the same representative.
+    """
+    best = records[0]
+    best_count = _distinct_role_count(best)
+    for rec in records[1:]:
+        n = _distinct_role_count(rec)
+        if n > best_count:
+            best, best_count = rec, n
+    return best
+
+
 def build_sample_collections(records_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Reduce ``records.json`` to the compact structure-only payload for the LLM.
 
     For each detected collection, emit its ``rank`` (as ``collection``), its
-    instance ``count``, and ONE representative record (the first) as an ordered
-    list of ``{role, text}`` leaves. The model sees the *shape* of a record —
-    which roles exist, in what order — plus how many instances the collection has,
-    with a single example text per field to convey meaning, and nothing more. It
-    never receives the full record set, so it cannot transcribe data.
+    instance ``count``, and ONE representative record — the most-complete real row
+    (see :func:`_representative_record`) — as an ordered list of ``{role, text}``
+    leaves. The model sees the *shape* of a record — which roles exist, in what
+    order — plus how many instances the collection has, with a single example text
+    per field to convey meaning, and nothing more. It never receives the full
+    record set, so it cannot transcribe data.
 
     ``count`` is load-bearing for primary-collection selection: a content
     collection tends to have many instances, a nav strip few. Raw ``score`` is
@@ -98,9 +129,10 @@ def build_sample_collections(records_data: dict[str, Any]) -> list[dict[str, Any
         reps = col.get("records") or []
         if not reps:
             continue
+        rep = _representative_record(reps)
         fields = [
             {"role": f.get("role"), "text": f.get("text")}
-            for f in reps[0].get("fields", [])
+            for f in rep.get("fields", [])
         ]
         samples.append(
             {

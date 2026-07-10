@@ -70,6 +70,141 @@ def test_payload_empty_for_zero_collections():
 
 
 # --------------------------------------------------------------------------- #
+# Step 5c: representative-record selection (most-complete, deterministic, no union)
+# --------------------------------------------------------------------------- #
+def _one_collection(records: list[dict]) -> dict:
+    return {"collections": [{"rank": 0, "count": len(records), "records": records}]}
+
+
+def test_representative_is_most_complete_not_first():
+    """records[0] is impoverished; a later record is complete -> sample the
+    complete one, so the entity shape covers every field the collection has."""
+    records = [
+        {"index": 0, "fields": [{"tag": "a", "text": "x", "role": "meta"}]},  # 1 role
+        {
+            "index": 1,
+            "fields": [
+                {"tag": "a", "text": "Long title here", "role": "title"},
+                {"tag": "span", "text": "github.com", "role": "domain"},
+                {"tag": "span", "text": "10 points", "role": "score"},
+            ],
+        },  # 3 distinct roles -> most complete
+        {"index": 2, "fields": [{"tag": "a", "text": "y", "role": "meta"}]},
+    ]
+    out = build_sample_collections(_one_collection(records))
+    assert [f["role"] for f in out[0]["fields"]] == ["title", "domain", "score"]
+
+
+def test_tiebreak_lowest_index_and_deterministic():
+    """Two records tie on distinct-role count -> the lower index wins, and
+    repeated runs are byte-identical."""
+    records = [
+        {
+            "index": 0,
+            "fields": [
+                {"tag": "a", "text": "A", "role": "title"},
+                {"tag": "span", "text": "d.com", "role": "domain"},
+            ],
+        },
+        {
+            "index": 1,
+            "fields": [
+                {"tag": "a", "text": "B", "role": "title"},
+                {"tag": "span", "text": "e.com", "role": "domain"},
+            ],
+        },
+    ]
+    coll = _one_collection(records)
+    out = build_sample_collections(coll)
+    assert [f["text"] for f in out[0]["fields"]] == ["A", "d.com"]  # index 0 wins
+    assert build_sample_collections(coll) == build_sample_collections(coll)
+
+
+def test_representative_is_one_real_record_not_a_union():
+    """The sampled fields must be exactly ONE real record's fields — never a
+    role-union across records (which would fabricate a shape no instance has)."""
+    records = [
+        {"index": 0, "fields": [{"role": "title", "text": "T0"}, {"role": "domain", "text": "d0"}]},
+        {
+            "index": 1,
+            "fields": [
+                {"role": "title", "text": "T1"},
+                {"role": "score", "text": "s1"},
+                {"role": "age", "text": "a1"},
+            ],
+        },  # 3 distinct -> chosen
+        {"index": 2, "fields": [{"role": "price", "text": "p2"}]},
+    ]
+    out = build_sample_collections(_one_collection(records))
+    sampled = [(f["role"], f["text"]) for f in out[0]["fields"]]
+    # The sampled pairs co-occur in exactly one actual record (no 'price' leaks in).
+    real_projections = [[(f["role"], f["text"]) for f in r["fields"]] for r in records]
+    assert sampled in real_projections
+    assert sampled == real_projections[1]
+
+
+def test_hn_short_title_wrinkle_recovers_title_role():
+    """The concrete Step-5 wrinkle: row 0 had a SHORT title mis-roled as `meta`
+    while a later row carries a proper `title` role. The representative must now
+    carry `title`, so the entity regains its title field regardless of ordering."""
+    records = [
+        {  # row 0 — short title "GPT-5.6" fell through infer_role to `meta`
+            "index": 0,
+            "fields": [
+                {"role": "rank", "text": "1."},
+                {"role": "meta", "text": "GPT-5.6"},
+                {"role": "domain", "text": "openai.com"},
+                {"role": "score", "text": "1255 points"},
+                {"role": "meta", "text": "author"},
+                {"role": "age", "text": "16 hours ago"},
+                {"role": "meta", "text": "hide"},
+                {"role": "comment_count", "text": "897 comments"},
+            ],
+        },
+        {  # a later row — long title correctly roled `title`
+            "index": 1,
+            "fields": [
+                {"role": "rank", "text": "2."},
+                {"role": "title", "text": "A sufficiently long descriptive headline"},
+                {"role": "domain", "text": "example.org"},
+                {"role": "score", "text": "88 points"},
+                {"role": "meta", "text": "author2"},
+                {"role": "age", "text": "3 hours ago"},
+                {"role": "meta", "text": "hide"},
+                {"role": "comment_count", "text": "12 comments"},
+            ],
+        },
+    ]
+    row0_roles = [f["role"] for f in records[0]["fields"]]
+    out = build_sample_collections(_one_collection(records))
+    rep_roles = [f["role"] for f in out[0]["fields"]]
+
+    assert "title" not in row0_roles  # records[0] lacked a title role
+    assert "title" in rep_roles  # representative recovered it
+
+
+def test_representative_change_preserves_payload_shape_and_order():
+    """Selecting a different in-collection record must not change collection
+    identity, count, or ordering — only which record fills `fields`."""
+    records_a = [
+        {"index": 0, "fields": [{"role": "title", "text": "a"}]},
+        {"index": 1, "fields": [{"role": "title", "text": "b"}, {"role": "price", "text": "9"}]},
+    ]
+    records_b = [{"index": 0, "fields": [{"role": "title", "text": "nav"}]}]
+    data = {
+        "collections": [
+            {"rank": 0, "count": 20, "records": records_a},
+            {"rank": 1, "count": 3, "records": records_b},
+        ]
+    }
+    out = build_sample_collections(data)
+    assert [c["collection"] for c in out] == [0, 1]  # order + rank unchanged
+    assert [c["count"] for c in out] == [20, 3]  # counts unchanged
+    # collection 0 sampled the fuller record (index 1), not records[0]
+    assert {f["role"] for f in out[0]["fields"]} == {"title", "price"}
+
+
+# --------------------------------------------------------------------------- #
 # Schema: sourceCollection required; seed still forbidden; empty entities ok
 # --------------------------------------------------------------------------- #
 _VALID_MODEL = {
