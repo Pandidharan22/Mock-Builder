@@ -49,12 +49,14 @@ The PoC IS the blueprint for Phase 1′.
 
 1. **Phase 1′ — `crawler/records.py`**: repeating-unit extraction → emit
    `records.json` per crawl state. (De-risked by the PoC.)
-2. **Phase 2′ — reasoning**: rewrite prompt to STRUCTURE-ONLY, feed one sample
-   record + screenshot; drop "generate rows"; swap to stronger model (payload
-   now fits the TPM budget).
-3. **Phase 3′ — generator**: seed `seed[]` from `records.json` (never the model);
-   add cart/collection store template + persistent header badge; add
-   detail-screen template + reachable edge variants.
+2. **Phase 2′ — reasoning** ✅ DONE: STRUCTURE-ONLY. seed removed from schema
+   (rejected, not just discouraged); prompt asks for shape not data; payload is
+   text-only (no screenshot — the model is text-only), one representative record
+   per collection + tokens. LLM selects primary collection (sourceCollection).
+3. **Phase 3′ — generator** (NEXT, starting Step 6): inject seed into
+   entity.seed from records.json via entity.sourceCollection (NOT from the
+   model); then add cart/collection store + header badge; detail-screen
+   template + reachable edge variants.
 4. **Re-run HN** (confirm zero filler) → then **grocery demo** (confirm the same
    pipeline builds a stateful cart harness with no per-app code).
 5. **Verifier checks** (P-data: every seed row traces to a real record; P-state:
@@ -76,12 +78,56 @@ The PoC IS the blueprint for Phase 1′.
 
 ## CURRENT POSITION
 
-- `PLAN_v2.md` committed to the repo.
-- PoC (`repeating_extractor_poc.py`) + fixtures exist as reference (may live
-  outside the repo; they are the blueprint, not production code).
-- **Next action: Phase 1′, Step 1** — create `crawler/records.py` as a
-  standalone module with the repeating-unit extractor + role inference, and a
-  test that runs it against the two fixtures, BEFORE wiring it into the crawler.
+Phase 1′ (crawler extraction) and Phase 2′ (structure-only reasoning) are
+COMPLETE and committed. Next action: Phase 3′, Step 6 — the injection zip.
+
+Completed and committed:
+- Step 1  — crawler/records.py: app-agnostic repeating-unit extractor + role
+            inference. 32 tests. Frozen (see freeze note below).
+- Step 2  — async seam on records.py (extract_records / extract_records_async
+            over one pure build_result_from_raw); wired into the async crawl
+            loop, emits evidence/<hash>_records.json per state.
+- Step 3  — extractor returns ranked collections[] (not a single winner); no
+            `primary` flag (primacy is the LLM's call); nesting + absorption
+            dedup.
+- Step 4  — reasoning is STRUCTURE-ONLY. seed removed from the entity schema
+            entirely; additionalProperties:false now REJECTS any model-emitted
+            seed (proven by a negative-guard test). Prompt asks for entity
+            shape/screens/flows, never data. Payload dropped the dead vision
+            path + elements dump: ~21K → ~3.2K tokens, text-only model.
+- Step 4b — cache key is now content-addressed over (system prompt + user
+            payload + model name): {state_hash}_{inputs_hash}_model.json. A
+            prompt change now MISSES stale entries (was silently serving stale
+            reasoning). Legacy state-hash-only files are inert.
+- Step 5  — LLM selects the primary collection by semantic judgment. Payload
+            forwards `count` per collection; prompt frames rank as an
+            overridable prior. Chosen index recorded as entity.sourceCollection
+            (integer, required on entities; added to schema). PROVEN by the
+            override test: model picks a lower-ranked, richer collection over a
+            high-count nav strip — primacy genuinely moved to the LLM.
+- Step 5c — entity shape sampled from the MOST-COMPLETE record (most distinct
+            non-empty roles, tie-break lowest index), not records[0]. Fixes the
+            order-dependence where a short first-row title corrupted the entity
+            shape. One real record, never a union.
+
+Test count: 70 passing.
+
+THE DEFECT IS DEAD: seed data is now structurally impossible for the model to
+emit (schema rejects it), and primacy is a semantic LLM decision, not the
+extractor's scoring arithmetic. Rendering is INTENTIONALLY seedless until Step 6
+adds injection — do not read a seedless render as a regression.
+
+NEXT: Phase 3′, Step 6 — the injection zip. There is NO transform between
+cli.py:78 (reason) and cli.py:95 (generate) today; the generator reads
+entity.seed directly off the entity object (GlobalContext.jsx.jinja:8). Step 6
+inserts a transform that reads records.json, and for each entity zips
+entity.fields × collections[entity.sourceCollection].records → entity.seed,
+before the generator sees the model. OPEN FORK being decided before Step 6 is
+written: the entity's fields have model-chosen camelCase NAMES (commentCount,
+author) but records are keyed by ROLE (comment_count, meta). The field→role
+mapping needed for the zip is not yet recorded per-field. Deciding whether to
+recover it heuristically at injection time OR add a `sourceRole` per field
+(a Step-5-shaped schema addition). Do not write Step 6 until this is resolved.
 
 ## Key files
 
@@ -92,6 +138,11 @@ The PoC IS the blueprint for Phase 1′.
 - `mockbuilder/reasoning/prompts.py`, `reason.py` — Phase 2′ targets
 - `mockbuilder/generator/generate.py` + `templates/` — Phase 3′ targets
 - `app_model.schema.json` — the contract; gets store/state additions in Phase 3′
+- records.py is FROZEN: _DETECTOR_JS, infer_role, grouping, adjacent-sibling
+  merge, dataclass shapes, to_dict(). Changes only via a dedicated,
+  explicitly-scoped step. The genericity guard (source contains no
+  athing/titleline/sitestr/card/subtext) and build_result_from_raw purity anchor
+  enforce this.
 
 ## Known quantities (observed, not bugs)
 - Records carry a duplicated `domain` field on HN (domain link renders twice
@@ -137,3 +188,26 @@ The PoC IS the blueprint for Phase 1′.
 - Sentinels at top level:
     {"collections": []}                  -> legitimate: no repeating collection (INFO)
     {"collections": [], "error": true}   -> extraction crashed, crawl survived (ERROR)
+
+    - entity.sourceCollection (integer) records which collection[] index the entity
+  was derived from. Required on every data-bearing entity. It is the linkage
+  Step 6's injection uses to find the right records. rank/index, not data.
+- The negative guard is load-bearing: a candidate with a `seed` key on any
+  entity now FAILS schema validation. If you ever need the model to emit data,
+  you'd have to reopen the schema — don't, that's the defect.
+- Entity field NAMES are model-chosen camelCase (commentCount, author); record
+  fields are keyed by ROLE (comment_count, meta, title). These namespaces do NOT
+  match — any code joining entity fields to record data must bridge them. This
+  is the core open problem for Step 6 injection.
+- DEFERRED cleanups (do deliberately, not incidentally):
+    * infer_role assigns `title` only when len(text) > 20; short titles fall
+      through to meta and corrupt entity shape. Length is the wrong signal;
+      needs a dedicated extractor pass (position/tag/href), NOT a threshold bump.
+      records.py is frozen until then.
+    * meta.crawlEvidenceHash and generatedAt are model-INVENTED placeholders;
+      should be stamped programmatically from the real state_hash in a reason.py
+      provenance pass.
+    * cli.py:89 logs the old {state_hash}_model.json filename — stale since 4b's
+      key change. One-line fix in a later pass.
+    * Entity fields are all typed `string` even where number/currency fits
+      (score, commentCount). Optional prompt nudge later.
