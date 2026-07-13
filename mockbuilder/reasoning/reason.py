@@ -301,6 +301,58 @@ def verify_graph_integrity(model: dict) -> list[str]:
     return violations
 
 
+def _roles_by_collection_rank(records_data: dict[str, Any]) -> dict[Any, set[str]]:
+    """Map each collection's rank -> the set of roles the model was SHOWN for it,
+    i.e. the roles of the same representative record ``build_sample_collections``
+    put in the payload. Validating against exactly what the model saw keeps the
+    error message's "valid roles" list honest."""
+    roles: dict[Any, set[str]] = {}
+    for col in records_data.get("collections", []):
+        reps = col.get("records") or []
+        rep = _representative_record(reps) if reps else {"fields": []}
+        roles[col.get("rank")] = {
+            f.get("role") for f in rep.get("fields", []) if f.get("role")
+        }
+    return roles
+
+
+def verify_source_roles(model: dict, records_data: dict) -> list[str]:
+    """Return violations where an entity field's ``sourceRole`` does not resolve
+    to a real role of that entity's ``sourceCollection``.
+
+    This is the 6a integrity gate: the model invents a ``sourceRole`` string per
+    field, and every such key must point at a role the extractor actually
+    produced (the ones shown in the representative record) — catching typos
+    ("titel") and invented roles ("username") at the reasoning boundary, before
+    the 6b injection zip depends on them. It deliberately does NOT check
+    uniqueness: two fields sharing a ``sourceRole`` is legal here (e.g. two
+    meta-derived fields) and is 6b's use-time guard.
+    """
+    roles_by_rank = _roles_by_collection_rank(records_data)
+    violations: list[str] = []
+    for entity in model.get("entities", []):
+        name = entity.get("name")
+        source_collection = entity.get("sourceCollection")
+        available = roles_by_rank.get(source_collection)
+        if available is None:
+            violations.append(
+                f"Entity '{name}' has sourceCollection {source_collection} which is "
+                f"not a detected collection. Detected collection indices: "
+                f"{sorted(r for r in roles_by_rank)}."
+            )
+            continue
+        valid = sorted(available)
+        for field in entity.get("fields", []):
+            source_role = field.get("sourceRole")
+            if source_role not in available:
+                violations.append(
+                    f"Field '{field.get('name')}' has sourceRole '{source_role}' "
+                    f"which is not a role in the source collection. Valid roles are: "
+                    f"{valid}. Set sourceRole to the role you read this field from."
+                )
+    return violations
+
+
 async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any]:
     """Synthesize (or load from cache) a validated AppModel for one crawl state.
 
@@ -401,7 +453,12 @@ async def synthesize_model(evidence_dir: Path, state_hash: str) -> dict[str, Any
             # Referential-integrity gate: the schema can't enforce cross-refs, so
             # reject dangling flow -> screen / flow -> testId references here. This
             # turns a graph invariant into a hard, deterministic compilation gate.
-            violations = verify_graph_integrity(candidate)
+            # sourceRole-integrity gate (6a): every field's sourceRole must resolve
+            # to a real role of its sourceCollection, checked against the SAME
+            # records_data the payload was built from (in hand, not re-read).
+            violations = verify_graph_integrity(candidate) + verify_source_roles(
+                candidate, records_data
+            )
             if violations:
                 raise ValueError("\n".join(violations))
         except (json.JSONDecodeError, jsonschema.ValidationError, ValueError) as exc:

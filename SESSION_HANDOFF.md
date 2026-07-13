@@ -211,3 +211,34 @@ recover it heuristically at injection time OR add a `sourceRole` per field
       key change. One-line fix in a later pass.
     * Entity fields are all typed `string` even where number/currency fits
       (score, commentCount). Optional prompt nudge later.
+
+- LINKAGE CONTRACT (entity → record data), settled after investigation:
+    entity.sourceCollection : int    -> which collections[] index the entity came from
+    field.sourceRole        : string -> which record ROLE this field reads from
+  Field NAME and record ROLE are DIFFERENT namespaces and do not match:
+    author       <- meta            (semantic rename; no `author` role exists)
+    commentCount <- comment_count   (case/format change)
+    domain       <- domain (x2)     (many-to-one dedup; both leaves same value)
+  Name-based matching WILL mis-zip. Always join via sourceRole.
+- Injection resolves a field to the FIRST record leaf whose role == sourceRole
+  ("first-occurrence"). Chosen over a model-emitted roleIndex because the model
+  is bad at positional counting, and an injection-assigned index just collapses
+  back into first-occurrence anyway. Residual risk (accepted, never observed):
+  breaks only if a model derives a field from a NON-first occurrence of a
+  different-valued duplicate role while dropping the first.
+- Duplicate roles in records are common (HN: domain x2 same-value, meta x2
+  DIFFERENT-value: author vs hide). The model reliably keeps <=1 field per role,
+  so collisions don't reach the entity — but injection still GUARDS for it.
+- Guards are split across the two boundaries where the model reaches into data:
+    6a (reasoning) -> RESOLVABILITY: every sourceRole is a real role. Invented
+                      roles / typos rejected into the retry loop.
+    6b (injection) -> UNIQUENESS + RESOLUTION: two fields sharing a sourceRole is
+                      a loud failure (not a guess); a sourceRole with no matching
+                      leaf is a loud failure. Never silently produce a hole.
+- id is a SYNTHETIC ROW INDEX. Deliberately boring: guaranteed unique,
+  zero-heuristic, deterministic within a build. HN records DO carry a real story
+  id in hrefs (item?id=NNN) but recovering it needs a param heuristic that
+  collides with user?id=<author> — a silent-corruption risk in the one field the
+  reducer depends on. Cross-crawl id stability is not a requirement (each build
+  regenerates from one crawl). If it ever becomes one, recovery needs its own
+  uniqueness guard — it is NOT free.

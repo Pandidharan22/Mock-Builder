@@ -86,7 +86,7 @@ _VALID_MODEL = {
     "entities": [
         {
             "name": "story",
-            "fields": [{"name": "title", "type": "string"}],
+            "fields": [{"name": "title", "type": "string", "sourceRole": "title"}],
             "sourceCollection": 0,
         }
     ],
@@ -278,17 +278,22 @@ def test_payload_change_misses_stale_cache(tmp_path, monkeypatch, _no_real_clien
     asyncio.run(R.synthesize_model(tmp_path, state_hash))
     assert spy_a.calls == 1
 
-    # Rewrite records.json so the constructed user payload differs.
+    # Rewrite records.json so the constructed user payload differs. Keep a
+    # `title` role (so _VALID_MODEL's sourceRole still resolves under the 6a
+    # gate); only the text/count change, which is enough to change the cache key.
     changed = {
         "collections": [
             {
                 "rank": 0,
                 "score": 12,
                 "signature": "Y",
-                "count": 1,
+                "count": 9,
                 "field_count": 1,
                 "records": [
-                    {"index": 0, "fields": [{"tag": "span", "text": "42", "role": "score"}]}
+                    {
+                        "index": 0,
+                        "fields": [{"tag": "a", "text": "A different headline", "role": "title"}],
+                    }
                 ],
             }
         ]

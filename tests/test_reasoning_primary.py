@@ -16,7 +16,7 @@ import jsonschema
 import pytest
 
 from mockbuilder.models import validate_app_model
-from mockbuilder.reasoning.reason import build_sample_collections
+from mockbuilder.reasoning.reason import build_sample_collections, verify_source_roles
 
 
 # --------------------------------------------------------------------------- #
@@ -229,7 +229,7 @@ _VALID_MODEL = {
     "entities": [
         {
             "name": "product",
-            "fields": [{"name": "title", "type": "string"}],
+            "fields": [{"name": "title", "type": "string", "sourceRole": "title"}],
             "sourceCollection": 0,
         }
     ],
@@ -290,3 +290,173 @@ def test_zero_collection_empty_entities_validates():
     shell = copy.deepcopy(_VALID_MODEL)
     shell["entities"] = []
     validate_app_model(shell)
+
+
+# --------------------------------------------------------------------------- #
+# Step 6a: sourceRole integrity — every sourceRole must resolve to a real role
+# --------------------------------------------------------------------------- #
+# An HN-shaped source collection (with the duplicate domain + meta leaves).
+_HN_RECORDS = {
+    "collections": [
+        {
+            "rank": 0,
+            "count": 30,
+            "records": [
+                {
+                    "index": 0,
+                    "fields": [
+                        {"role": "rank", "text": "1."},
+                        {"role": "title", "text": "A sufficiently long headline"},
+                        {"role": "domain", "text": "github.com"},
+                        {"role": "domain", "text": "github.com"},
+                        {"role": "score", "text": "100 points"},
+                        {"role": "meta", "text": "alice"},
+                        {"role": "age", "text": "3 hours ago"},
+                        {"role": "meta", "text": "hide"},
+                        {"role": "comment_count", "text": "42 comments"},
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def _entities_model(fields: list[dict], source_collection: int = 0) -> dict:
+    """verify_source_roles only reads model['entities']."""
+    return {
+        "entities": [
+            {"name": "story", "fields": fields, "sourceCollection": source_collection}
+        ]
+    }
+
+
+# The correct HN linkage — the table 6b will consume. author->meta is the
+# semantic-rename case name-matching would have missed.
+_HN_FIELDS_OK = [
+    {"name": "rank", "type": "string", "sourceRole": "rank"},
+    {"name": "title", "type": "string", "sourceRole": "title"},
+    {"name": "domain", "type": "string", "sourceRole": "domain"},
+    {"name": "score", "type": "string", "sourceRole": "score"},
+    {"name": "author", "type": "string", "sourceRole": "meta"},
+    {"name": "age", "type": "string", "sourceRole": "age"},
+    {"name": "commentCount", "type": "string", "sourceRole": "comment_count"},
+]
+
+
+def test_source_roles_all_resolve():
+    """Valid linkage (incl. author<-meta, commentCount<-comment_count) passes."""
+    assert verify_source_roles(_entities_model(_HN_FIELDS_OK), _HN_RECORDS) == []
+
+
+def test_source_role_invented_is_rejected():
+    """A role the extractor never produced ('username') is caught, with an
+    actionable message listing the valid roles."""
+    fields = copy.deepcopy(_HN_FIELDS_OK)
+    fields[4]["sourceRole"] = "username"  # author field points at a fake role
+    violations = verify_source_roles(_entities_model(fields), _HN_RECORDS)
+    assert len(violations) == 1
+    assert "username" in violations[0]
+    assert "Valid roles are" in violations[0]
+    assert "meta" in violations[0]  # the real role it should have used
+
+
+def test_source_role_typo_is_rejected():
+    fields = copy.deepcopy(_HN_FIELDS_OK)
+    fields[1]["sourceRole"] = "titel"  # typo of 'title'
+    violations = verify_source_roles(_entities_model(fields), _HN_RECORDS)
+    assert len(violations) == 1
+    assert "titel" in violations[0]
+
+
+def test_legal_same_role_collision_passes_6a():
+    """Two fields both sourceRole 'meta' is LEGAL at 6a (uniqueness is 6b's
+    guard) — verify_source_roles must NOT reject it, since both resolve."""
+    fields = copy.deepcopy(_HN_FIELDS_OK)
+    # add a second meta-derived field (author + a hide label, both from meta)
+    fields.append({"name": "hideLabel", "type": "string", "sourceRole": "meta"})
+    assert verify_source_roles(_entities_model(fields), _HN_RECORDS) == []
+
+
+def test_source_collection_out_of_range_is_rejected():
+    """A sourceCollection that isn't a detected collection is flagged."""
+    violations = verify_source_roles(
+        _entities_model(_HN_FIELDS_OK, source_collection=5), _HN_RECORDS
+    )
+    assert len(violations) == 1
+    assert "not a detected collection" in violations[0]
+
+
+def test_source_roles_validated_against_representative_not_row0():
+    """The valid-role set is the representative record's roles (what the model
+    saw), so a title present only in a later, fuller record still counts."""
+    records = {
+        "collections": [
+            {
+                "rank": 0,
+                "count": 2,
+                "records": [
+                    # row 0 impoverished: title mis-roled as meta (short title)
+                    {"index": 0, "fields": [{"role": "meta", "text": "X"}]},
+                    # row 1 complete -> representative; carries a real title role
+                    {
+                        "index": 1,
+                        "fields": [
+                            {"role": "title", "text": "A long proper headline here"},
+                            {"role": "domain", "text": "d.com"},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    fields = [
+        {"name": "title", "type": "string", "sourceRole": "title"},
+        {"name": "domain", "type": "string", "sourceRole": "domain"},
+    ]
+    assert verify_source_roles(_entities_model(fields), records) == []
+
+
+def test_invented_sourcerole_triggers_retry_then_recovers(tmp_path, monkeypatch):
+    """End-to-end: a candidate with an invented sourceRole is rejected INTO the
+    retry loop (not accepted); a corrected candidate on the next attempt is
+    accepted. Proves the 6a gate fires at the reasoning boundary."""
+    import asyncio
+    import json
+    import types
+
+    from mockbuilder.reasoning import reason as R
+
+    records = {
+        "collections": [
+            {
+                "rank": 0,
+                "count": 1,
+                "records": [
+                    {"index": 0, "fields": [{"tag": "a", "text": "A long headline here", "role": "title"}]}
+                ],
+            }
+        ]
+    }
+    (tmp_path / "S_records.json").write_text(json.dumps(records), encoding="utf-8")
+    (tmp_path / "design_tokens.json").write_text(json.dumps({"colors": {}}), encoding="utf-8")
+    monkeypatch.setattr(R, "AsyncGroq", lambda *a, **k: object())
+
+    good = copy.deepcopy(_VALID_MODEL)  # field sourceRole 'title' resolves
+    bad = copy.deepcopy(_VALID_MODEL)
+    bad["entities"][0]["fields"][0]["sourceRole"] = "username"  # invented role
+    sequence = [bad, good]
+    calls = {"n": 0}
+
+    async def _spy(client, messages):
+        model = sequence[min(calls["n"], len(sequence) - 1)]
+        calls["n"] += 1
+        content = json.dumps(model)
+        message = types.SimpleNamespace(content=content)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    monkeypatch.setattr(R, "_create_completion", _spy)
+    result = asyncio.run(R.synthesize_model(tmp_path, "S"))
+
+    assert calls["n"] == 2  # the invented sourceRole forced a retry
+    assert result["entities"][0]["fields"][0]["sourceRole"] == "title"  # recovered

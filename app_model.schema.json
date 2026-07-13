@@ -136,7 +136,7 @@
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["name", "type"],
+            "required": ["name", "type", "sourceRole"],
             "additionalProperties": false,
             "properties": {
               "name": { "$ref": "#/$defs/identifier" },
@@ -144,6 +144,7 @@
                 "type": "string",
                 "enum": ["string", "number", "boolean", "id", "imageUrl", "currency", "enum", "ref", "array"]
               },
+              "sourceRole": { "type": "string", "description": "The exact role string of the record leaf this field is derived from (e.g. a field named 'author' read from a 'meta' leaf has sourceRole 'meta'). Names WHERE THE DATA COMES FROM, independent of the field's chosen name. The linkage key the seed-injection zip uses to pull each field's real value. Must be a role that appears in the entity's sourceCollection records; NOT data." },
               "enumValues": { "type": "array", "items": { "type": "string" }, "description": "Required when type is 'enum'." },
               "refEntity": { "$ref": "#/$defs/identifier", "description": "Required when type is 'ref' or 'array' of refs: the entity this points to." },
               "optional": { "type": "boolean", "default": false }
