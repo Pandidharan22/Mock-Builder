@@ -24,6 +24,7 @@ from typing import Any
 
 from .crawler.crawler import EVIDENCE_DIR, Crawler
 from .generator.generate import ReactGenerator
+from .generator.inject import inject_seed
 from .reasoning.reason import synthesize_model
 from .verifier.verify import run_verification
 
@@ -88,6 +89,20 @@ async def _build_pipeline(url: str, out_dir: str) -> None:
         f"flows={len(model.get('flows', []))} "
         f"-> {EVIDENCE_DIR / f'{state_hash}_model.json'}"
     )
+
+    # Seed injection (Phase 3'): fill entity.seed from the REAL extracted records
+    # via the sourceCollection + sourceRole linkage. The model never produces
+    # data — it comes only from records.json. A model with no data-bearing entity
+    # (zero-collection case) passes through unchanged.
+    records_path = EVIDENCE_DIR / f"{state_hash}_records.json"
+    records_data = (
+        json.loads(records_path.read_text(encoding="utf-8"))
+        if records_path.exists()
+        else {"collections": []}
+    )
+    model = inject_seed(model, records_data)
+    seeded = sum(len(e.get("seed", [])) for e in model.get("entities", []))
+    print(f"Injected {seeded} real seed row(s) from {records_path.name}")
 
     # Deterministic generation: compile the validated AppModel into a React
     # harness under the output directory (no AI, pure Jinja2 templates).
