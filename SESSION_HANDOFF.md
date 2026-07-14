@@ -242,3 +242,77 @@ recover it heuristically at injection time OR add a `sourceRole` per field
   reducer depends on. Cross-crawl id stability is not a requirement (each build
   regenerates from one crawl). If it ever becomes one, recovery needs its own
   uniqueness guard — it is NOT free.
+
+- ROLE INFERENCE IS TWO-PASS (records.py, unfrozen in Step 7 and re-stable now):
+    pass 1  pure per-leaf -> a SPECIFIC role (image/price/age/score/domain/
+            comment_count/rank/vote/number) or UNCLAIMED. Patterns are
+            fullmatch/whole-text, NOT substring — a title containing "points"
+            or "year" must not be eaten.
+    pass 2  record-level -> first UNCLAIMED leaf in document order becomes
+            `title`; the rest become `meta`.
+  WHY negative definition: there is no positive feature meaning "title" across
+  apps (HN uses a bare <a>, shop a <span>, multi an <h3>). The title is the
+  free-text payload — the thing that is NOT typed data. Do not reintroduce a
+  length threshold or a "heading tag" heuristic; both were tried and both
+  relocate the failure.
+  DELIBERATE TRADE: stricter pass 1 -> unanticipated formats fall through
+  UNTYPED (graceful) rather than being mistyped (corrupting). If a real site's
+  age/price format goes unrecognized, WIDEN THE ANCHORED PATTERN — never loosen
+  the anchor back to substring matching.
+- The purity anchor (_CANNED_RAW/_EXPECTED_RESULT) survived Step 7 UNMODIFIED
+  and is the independent regression net for the specific roles. Its invariance
+  is a property of its canned data (titles that are first-unclaimed) — if
+  _CANNED_RAW is ever edited, re-verify the invariance holds.
+- Role-vocabulary changes propagate WITHOUT touching reasoning: a changed role
+  stream changes build_sample_collections' payload -> changes the 4b cache key
+  -> cache MISS -> fresh reasoning against the new vocabulary. Verified in
+  Step 7. Always CONFIRM the miss rather than assume it — a perfect extractor
+  with a stale cached model still renders wrong.
+  
+## GENERICITY PROVEN (grocery diagnostic, unseen site)
+
+Ran the full pipeline against scrapingcourse.com/ecommerce — a real WooCommerce
+storefront the pipeline had never seen. Zero per-app code.
+
+RESULT — the two-track thesis generalizes past HN:
+- Extractor found 3 collections: the 16-product grid (rank 0), a 20-item nav
+  menu (rank 1), 4-item pagination (rank 2). Step-3 absorption did NOT suppress
+  the grid (the latent risk didn't bite).
+- Reasoning chose the grid as primary among THREE+ candidates (sourceCollection
+  0) — Step 5's semantic selection generalizes past the two-candidate case. It
+  also declared a product-detail screen.
+- 16 real products injected. Real names, prices, image URLs. No fabrication.
+It is a mockup builder, not an HN mockup builder. This is the headline result.
+
+FOUR GAPS SURFACED (the spec for what remains):
+1. NO STATEFUL STORES (generator gap, Phase 3′ as originally specced).
+   No cart, no badge, no add button. An agent cannot ACT on the page — which is
+   the entire point of Omnisavant's use case. Highest-value remaining work.
+2. NO IMAGE RENDERING (generator gap).
+   type: imageUrl renders as a text URL string, not an <img src=>. The generator
+   treats every field as a text span. HN had no images so this never surfaced;
+   every commerce app is image-first.
+3. NO THEMING ON THIS SITE (harvester gap).
+   design_tokens came back EMPTY (colors: None) on this site's CSS, so the mock
+   is unstyled. HN's tokens harvested cleanly — the harvester works on some CSS
+   shapes and not others. Visual fidelity currently cannot be claimed on
+   arbitrary sites.
+4. DOM-FUSED FIELDS (a fidelity CEILING, not a bug — do not "fix" with a
+   heuristic). This site renders "Abominable Hoodie $69.00" as ONE leaf, so the
+   price rides inside the title. The extractor faithfully reflected the markup.
+   Splitting it needs app knowledge — exactly what we refuse to hardcode. A
+   "price-looking suffix" heuristic would misfire on product names ending in
+   numbers. State this as a known limit of structural extraction.
+
+WHAT AN AGENT CAN / CANNOT DO ON THE GROCERY MOCK TODAY:
+  CAN:    read all 16 real products (names, prices); navigate nav + detail
+          screen; target rows by testid.
+  CANNOT: add to cart (no store); see images (URLs render as text); query price
+          as a field (fused into title); filter by category (nav is inert).
+
+SEQUENCE FROM HERE (runway: weeks):
+  Step 8  — image rendering (generator honors type: imageUrl)
+  Step 9  — theming (harvester works on arbitrary CSS)
+  Step 10 — stateful stores (cart/collection + header badge + mutateState) ←
+            the flagship: this is what makes it agent-TESTABLE
+  Then    — verifier checks (P-data, P-state), Vercel deploy, README
