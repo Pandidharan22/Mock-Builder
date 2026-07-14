@@ -316,3 +316,20 @@ SEQUENCE FROM HERE (runway: weeks):
   Step 10 — stateful stores (cart/collection + header badge + mutateState) ←
             the flagship: this is what makes it agent-TESTABLE
   Then    — verifier checks (P-data, P-state), Vercel deploy, README
+
+- The generator now has TWO declaration-driven tag seams, and they are symmetric:
+    elements    -> render_el switches on el.kind (input/select/link/button)
+    data fields -> render_image / span branch on field.type
+  Both emit based on what the MODEL DECLARED, not on field names. Any future tag
+  treatment (currency, number) slots into the same branch. Do NOT name-match.
+- THE STORE WRITE-PATH ALREADY EXISTS (discovered in Step 8's read):
+    * a mutateState action already renders onClick={() => mutate({type, store,
+      payload})} (Component.jsx.jinja)
+    * GlobalContext's reducer already implements add/remove/increment/toggle
+  So stores are NOT "build a state system" — they are "give the existing system
+  something to target (schema stores) and something that READS it (a badge with
+  a stateBinding)". Smaller than it looks.
+- KNOWN, not fixed: if a model ever gives an imageUrl field uiHint: metadata,
+  the <img> renders in the cramped meta row. Grocery got uiHint: content and
+  looked right. If it bites, the fix is a PROMPT nudge (imageUrl -> sensible
+  uiHint), NOT a template special-case for image placement.

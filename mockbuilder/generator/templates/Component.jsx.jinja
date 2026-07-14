@@ -49,6 +49,17 @@ import { useMockState } from '../GlobalContext';
 <button {{ testid_attr }} className="{{ cls }}"{{ handler_attr }}>{ {{ display_label | label_expr }} }</button>
 {%- endif -%}
 {%- endmacro %}
+{#- Render a data field whose type is imageUrl as an <img> (type-driven, never
+    name-matched). An empty/missing value renders a neutral light-gray placeholder
+    box — visually distinct from a real photo, never a broken-image icon or
+    "undefined". Alt text comes from real data (see classify_component). -#}
+{% macro render_image(name, cn, alt) -%}
+{props.{{ name }} ? (
+            <img data-testid="{{ cn }}-{{ name }}" src={props.{{ name }}} alt={ {{ alt }} } className="w-20 h-20 object-cover rounded flex-shrink-0" />
+          ) : (
+            <div data-testid="{{ cn }}-{{ name }}" className="w-20 h-20 bg-gray-100 border border-gray-200 rounded flex-shrink-0" aria-hidden="true" />
+          )}
+{%- endmacro %}
 
 // {{ component.name }}{% if component.role %} - {{ component.role }}{% endif %}
 
@@ -76,19 +87,31 @@ export default function {{ component.name }}(props) {
           {{ render_el(el, 'text-base font-medium text-gray-900 hover:text-primary hover:underline cursor-pointer') }}
 {% endfor %}
 {% for f in hierarchy.title_fields %}
+{% if hierarchy.field_types.get(f) == 'imageUrl' %}
+          {{ render_image(f, cn, hierarchy.image_alt) }}
+{% else %}
           <span data-testid="{{ cn }}-{{ f }}" className="text-base font-medium text-gray-900">{props.{{ f }} || ''}</span>
+{% endif %}
 {% endfor %}
         </div>
 {% if hierarchy.content_fields %}
         <div data-testid="{{ cn }}-content" className="text-sm text-gray-700 mt-1">
 {% for f in hierarchy.content_fields %}
+{% if hierarchy.field_types.get(f) == 'imageUrl' %}
+          {{ render_image(f, cn, hierarchy.image_alt) }}
+{% else %}
           <span data-testid="{{ cn }}-{{ f }}">{props.{{ f }} || ''}</span>
+{% endif %}
 {% endfor %}
         </div>
 {% endif %}
         <div data-testid="{{ cn }}-meta" className="flex flex-wrap items-center gap-3 text-xs text-gray-500 mt-1">
 {% for f in hierarchy.metadata_fields %}
+{% if hierarchy.field_types.get(f) == 'imageUrl' %}
+          {{ render_image(f, cn, hierarchy.image_alt) }}
+{% else %}
           <span data-testid="{{ cn }}-{{ f }}">{props.{{ f }} || ''}</span>
+{% endif %}
 {% endfor %}
 {% for el in hierarchy.action_elements %}
           {{ render_el(el, 'hover:text-primary hover:underline cursor-pointer') }}

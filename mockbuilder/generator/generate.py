@@ -144,10 +144,24 @@ def classify_component(component: dict[str, Any]) -> dict[str, Any]:
         else:
             action_elements.append(el)
 
+    # Type is the render contract (not the field name): the template switches on
+    # it to emit e.g. an <img> for imageUrl instead of a text span. Carried here
+    # because the slot lists above are bare names and would otherwise drop it.
+    field_types = {p.get("name"): p.get("type") for p in props}
+
+    # Alt text for image fields, derived from REAL data: the title-hinted field's
+    # value if present, else the (model-declared) entity name. Never invented copy
+    # and never cleaned up — "Abominable Hoodie $69.00" is faithful to the source.
+    title_prop = next((p["name"] for p in props if p.get("uiHint") == "title"), None)
+    entity_name = component.get("boundToEntity") or component.get("name") or "item"
+    image_alt = (f"props.{title_prop} || " if title_prop else "") + json.dumps(entity_name)
+
     return {
         "title_fields": title_fields,
         "metadata_fields": metadata_fields,
         "content_fields": content_fields,
+        "field_types": field_types,
+        "image_alt": image_alt,
         "vote_elements": vote_elements,
         "title_elements": title_elements,
         "action_elements": action_elements,
