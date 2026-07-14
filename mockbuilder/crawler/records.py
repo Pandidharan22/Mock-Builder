@@ -62,6 +62,8 @@ __all__ = [
     "Record",
     "Collection",
     "ExtractionResult",
+    "UNCLAIMED",
+    "assign_record_roles",
     "build_result_from_raw",
     "extract_records",
     "extract_records_async",
@@ -279,27 +281,62 @@ _DETECTOR_JS = r"""
 
 
 # --------------------------------------------------------------------------- #
-# (4) Deterministic role inference. Pure Python, no browser, unit-testable.
+# (4) Deterministic role inference — TWO passes. Pure Python, no browser.
+#
+# PASS 1 (``infer_role``, per-leaf): assign the SPECIFIC roles, which all have
+#   robust positive patterns (currency symbol, time words, dotted hostname, ...).
+#   A leaf matching none returns ``UNCLAIMED`` — pass 1 cannot know title vs meta.
+# PASS 2 (``assign_record_roles``, per-record): among the leaves pass 1 left
+#   unclaimed, in DOCUMENT ORDER, the FIRST becomes ``title`` and the rest
+#   ``meta``. Title is defined NEGATIVELY — it is the free-text payload no
+#   specific role claims — because no positive feature (heading tag, href, first
+#   anchor) means "title" across HN (bare <a>), shop (<span>), and multi (<h3>).
 # --------------------------------------------------------------------------- #
+# Sentinel returned by pass 1 for a leaf no specific role matched. It never
+# reaches a Field.role: pass 2 always resolves it to ``title`` or ``meta``.
+UNCLAIMED = "unclaimed"
+
+# The specific-role patterns are ANCHORED — matched with ``fullmatch`` so the
+# WHOLE leaf must BE the structured value, never merely contain a keyword. A
+# greedy substring match steals titles: "Why the leap second matters" is a
+# sentence that mentions time, not an age; "$100 laptops for schools" is a
+# headline, not a price. Anchoring encodes that distinction and generalizes.
+# Edge cases are handled by WIDENING the anchored alternatives (units, suffixes,
+# extra formats), never by loosening the anchor. Trade-off (see module notes):
+# an unanticipated format falls through to title/meta (untyped) instead of being
+# stolen — graceful degradation, and strictly better than the reverse.
 _RANK_RE = re.compile(r"\d+\.")
 _VOTES = ("▲", "△", "↑", "▴")  # ▲ △ ↑ ▴
-_PRICE_RE = re.compile(r"[₹$€£]\s?\d")  # ₹ $ € £ followed by a digit
+# ₹52 · $9.99 · € 5 · ₹52/kg (optional trailing unit) — whole leaf only.
+_PRICE_RE = re.compile(r"[₹$€£]\s?\d[\d.,]*(?:\s*/\s*\w+)?")
 _NUMBER_RE = re.compile(r"\d+(\.\d+)?")
-_COMMENT_RE = re.compile(r"\bcomments?\b")
-_SCORE_RE = re.compile(r"\b(points?|votes?)\b")
-_AGE_RE = re.compile(r"\b(seconds?|minutes?|hours?|days?|weeks?|months?|years?|ago)\b")
+# "234 comments" / "1 comment" / "1,234 comments" — a count, not any text with "comment".
+_COMMENT_RE = re.compile(r"\d[\d,]*\s+comments?", re.I)
+# "100 points" / "1 point" / "1,345 votes" — a count, not "points to a future".
+_SCORE_RE = re.compile(r"\d[\d,]*\s+(?:points?|votes?)", re.I)
+# "9 hours ago" / "1 day ago" / "yesterday" / "just now" — a time expression, not
+# a sentence mentioning time.
+_AGE_RE = re.compile(
+    r"\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago"
+    r"|yesterday|today|just\s+now",
+    re.I,
+)
 _DOMAIN_RE = re.compile(r"[a-z0-9.-]+\.[a-z]{2,}(/\S*)?")
 
 
 def infer_role(field: dict[str, Any]) -> str:
-    """Classify a single leaf into a role, deterministically.
+    """PASS 1: classify one leaf into a SPECIFIC role, or return ``UNCLAIMED``.
 
-    Pure function: takes one field dict (``{tag, text, href?, src?}``) and
-    returns exactly one of: image, rank, vote, price, number, comment_count,
-    score, age, domain, title, meta. No Playwright, no state, no randomness.
+    Pure per-leaf function: takes one field dict (``{tag, text, href?, src?}``)
+    and returns one of the specific roles — image, rank, vote, price, number,
+    comment_count, score, age, domain — each of which has a robust positive
+    pattern. A leaf matching none returns ``UNCLAIMED``. It deliberately does NOT
+    decide ``title`` vs ``meta``: those are free-text and can only be told apart
+    by position within the record, which a per-leaf function cannot see — see
+    :func:`assign_record_roles` (pass 2).
 
-    Order matters — the more specific patterns are tried first so that, e.g.,
-    "100 points" is a ``score`` rather than a bare ``number``.
+    Order matters — more specific patterns are tried first so that, e.g., "100
+    points" is a ``score`` rather than a bare ``number``.
     """
     tag = field.get("tag", "")
     text = field.get("text", "")
@@ -310,23 +347,44 @@ def infer_role(field: dict[str, Any]) -> str:
         return "rank"
     if text in _VOTES:
         return "vote"
-    if _PRICE_RE.search(text):
+    # All specific patterns use fullmatch: the WHOLE leaf must be the value.
+    if _PRICE_RE.fullmatch(text):
         return "price"
-    if _COMMENT_RE.search(text):
+    if _COMMENT_RE.fullmatch(text):
         return "comment_count"
-    if _SCORE_RE.search(text):
+    if _SCORE_RE.fullmatch(text):
         return "score"
-    if _AGE_RE.search(text):
+    if _AGE_RE.fullmatch(text):
         return "age"
     if _DOMAIN_RE.fullmatch(text):
         return "domain"
     if _NUMBER_RE.fullmatch(text):
         return "number"
-    if field.get("href") and len(text) > 15:
-        return "title"
-    if len(text) > 20:
-        return "title"
-    return "meta"
+    return UNCLAIMED
+
+
+def assign_record_roles(raw_fields: list[dict[str, Any]]) -> list[str]:
+    """PASS 2: resolve one record's leaves to final roles, in document order.
+
+    Runs pass 1 (:func:`infer_role`) on every leaf, then resolves the ones it left
+    ``UNCLAIMED``: the FIRST such leaf, in document order, becomes ``title`` (the
+    headline the page leads with); every remaining unclaimed leaf becomes ``meta``.
+    Document order already encodes headline-before-byline — that's how the page is
+    meant to be read — so a short title ("GPT-5.6", 7 chars) still wins over a
+    longer author string because it comes first. A record with no unclaimed leaves
+    yields no title (and never raises). Deterministic: same leaves -> same roles.
+    """
+    roles = [infer_role(f) for f in raw_fields]
+    title_taken = False
+    for i, role in enumerate(roles):
+        if role != UNCLAIMED:
+            continue
+        if not title_taken:
+            roles[i] = "title"
+            title_taken = True
+        else:
+            roles[i] = "meta"
+    return roles
 
 
 # --------------------------------------------------------------------------- #
@@ -351,17 +409,18 @@ def build_result_from_raw(raw: dict[str, Any]) -> ExtractionResult:
         records: list[Record] = []
         field_count = 0
         for i, raw_fields in enumerate(raw_col.get("records", [])):
-            fields: list[Field] = []
-            for rf in raw_fields:
-                fields.append(
-                    Field(
-                        tag=rf.get("tag", ""),
-                        text=rf.get("text", ""),
-                        role=infer_role(rf),
-                        href=rf.get("href"),
-                        src=rf.get("src"),
-                    )
+            # Pass 2 resolves title/meta by position; pass 1 typed the specifics.
+            roles = assign_record_roles(raw_fields)
+            fields: list[Field] = [
+                Field(
+                    tag=rf.get("tag", ""),
+                    text=rf.get("text", ""),
+                    role=role,
+                    href=rf.get("href"),
+                    src=rf.get("src"),
                 )
+                for rf, role in zip(raw_fields, roles)
+            ]
             field_count += len(fields)
             records.append(Record(index=i, fields=fields))
 

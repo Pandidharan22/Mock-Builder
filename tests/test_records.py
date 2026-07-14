@@ -24,10 +24,12 @@ from pathlib import Path
 import pytest
 
 from mockbuilder.crawler.records import (
+    UNCLAIMED,
     Collection,
     ExtractionResult,
     Field,
     Record,
+    assign_record_roles,
     build_result_from_raw,
     extract_records,
     extract_records_async,
@@ -236,6 +238,14 @@ def test_extraction_is_deterministic(browser):
 # The records that the previous SINGLE-winner detector produced for this payload.
 # Multi-collection is a re-PACKAGING, not a re-tuning, so collections[0] must be
 # byte-identical to these. This list is frozen: if it changes, the algorithm did.
+#
+# INVARIANCE NOTE (Step 7): this anchor survives the two-pass role-inference
+# refactor UNMODIFIED and is the independent net that pins rank/domain/score/
+# image/price steady while title/meta move to pass 2. That works ONLY because
+# every ``title`` leaf below is the FIRST unclaimed leaf in its record, so
+# residual+position reproduces the same label residual-length once did. This is a
+# property of THIS canned data — if ``_CANNED_RAW`` is ever edited, re-verify the
+# invariance (each title leaf must still be its record's first unclaimed leaf).
 _OLD_WINNER_RECORDS = [
     Record(
         index=0,
@@ -444,13 +454,83 @@ def test_to_dict_shape_and_drops_none(browser):
         ({"tag": "a", "text": "1 day ago"}, "age"),
         ({"tag": "span", "text": "github.com"}, "domain"),
         ({"tag": "span", "text": "blog.mozilla.org"}, "domain"),
-        (
-            {"tag": "a", "text": "A sufficiently long headline here", "href": "/x"},
-            "title",
-        ),
-        ({"tag": "a", "text": "short", "href": "/x"}, "meta"),
-        ({"tag": "span", "text": "by"}, "meta"),
+        # Free text matches NO specific role -> pass 1 returns UNCLAIMED. Whether
+        # such a leaf becomes title or meta is a record-level (pass 2) decision,
+        # tested below — a per-leaf assertion about title/meta has no meaning now.
+        ({"tag": "a", "text": "A sufficiently long headline here", "href": "/x"}, UNCLAIMED),
+        ({"tag": "a", "text": "short", "href": "/x"}, UNCLAIMED),
+        ({"tag": "span", "text": "by"}, UNCLAIMED),
     ],
 )
 def test_infer_role(field, expected):
     assert infer_role(field) == expected
+
+
+# --------------------------------------------------------------------------- #
+# Pass 2 (record-level) — title = first unclaimed leaf in document order
+# --------------------------------------------------------------------------- #
+def test_short_title_wins_by_position_hn_shape():
+    """THE bug, as a test: an HN row whose title is a 7-char string. Position, not
+    length, makes 'GPT-5.6' the title; author and hide are meta."""
+    raw = [
+        {"tag": "td", "text": "1."},
+        {"tag": "a", "text": "GPT-5.6", "href": "https://openai.com"},
+        {"tag": "span", "text": "openai.com"},
+        {"tag": "span", "text": "1255 points"},
+        {"tag": "a", "text": "logickkk1", "href": "user?id=logickkk1"},
+        {"tag": "a", "text": "16 hours ago", "href": "item?id=1"},
+        {"tag": "a", "text": "hide", "href": "hide?id=1"},
+        {"tag": "a", "text": "897 comments", "href": "item?id=1"},
+    ]
+    roles = assign_record_roles(raw)
+    assert roles == [
+        "rank", "title", "domain", "score", "meta", "age", "meta", "comment_count"
+    ]
+    # explicitly: the short headline is the title, not a longer meta leaf
+    assert roles[1] == "title"  # "GPT-5.6"
+    assert roles[4] == "meta" and roles[6] == "meta"  # author, hide
+
+
+def test_first_unclaimed_is_title_rest_meta():
+    raw = [
+        {"tag": "span", "text": "100 points"},  # score (claimed)
+        {"tag": "a", "text": "The headline"},   # first unclaimed -> title
+        {"tag": "a", "text": "alice"},          # unclaimed -> meta
+        {"tag": "a", "text": "flag"},           # unclaimed -> meta
+    ]
+    assert assign_record_roles(raw) == ["score", "title", "meta", "meta"]
+
+
+def test_short_product_name_is_title_not_meta():
+    """A shop card: the short product name (previously mis-roled as meta by the
+    len>20 rule) is now the title once image/price are claimed."""
+    raw = [
+        {"tag": "img", "text": "[img]", "src": "onion.png"},
+        {"tag": "span", "text": "Onion 1kg"},
+        {"tag": "span", "text": "₹40"},
+        {"tag": "span", "text": "1 kg"},
+    ]
+    roles = assign_record_roles(raw)
+    assert roles == ["image", "title", "price", "meta"]
+    assert roles[1] == "title"  # "Onion 1kg" (9 chars) — was meta under len>20
+
+
+def test_record_with_no_unclaimed_leaves_has_no_title():
+    """All leaves claimed by specific roles -> no title, no meta, no crash, no
+    invented role."""
+    raw = [
+        {"tag": "span", "text": "100 points"},
+        {"tag": "span", "text": "github.com"},
+        {"tag": "a", "text": "3 hours ago", "href": "x"},
+    ]
+    roles = assign_record_roles(raw)
+    assert roles == ["score", "domain", "age"]
+    assert "title" not in roles and "meta" not in roles
+
+
+def test_assign_record_roles_is_deterministic():
+    raw = [
+        {"tag": "a", "text": "Headline"},
+        {"tag": "span", "text": "author"},
+    ]
+    assert assign_record_roles(raw) == assign_record_roles(raw) == ["title", "meta"]
