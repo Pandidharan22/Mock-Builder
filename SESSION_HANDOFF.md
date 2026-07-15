@@ -333,3 +333,14 @@ SEQUENCE FROM HERE (runway: weeks):
   the <img> renders in the cramped meta row. Grocery got uiHint: content and
   looked right. If it bites, the fix is a PROMPT nudge (imageUrl -> sensible
   uiHint), NOT a template special-case for image placement.
+
+- THEMING IS TWO HALVES. Half 1 (DONE, Step 9): the harvester detects the real
+  accent (grocery #7f54b3) and the model maps it to designTokens.primary.
+  Half 2 (OUTSTANDING, deferred): the generator templates barely USE `primary`
+  — mostly on hover: states and the HN votearrow. So a correct accent doesn't
+  visibly brand a static page (grocery renders gray-on-white, purple only on
+  hover). Making branding VISIBLE (titles/prices/header in primary) is a
+  contained TEMPLATE task, deliberately deferred as lower-value than stores.
+  It does NOT block stores. Pick it up only if runway remains after stores +
+  verifier + deploy. Risk if skipped: the demo IS faithful but doesn't LOOK
+  branded in the first-glance test a human reviewer applies.

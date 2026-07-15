@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Monochrome fixture</title></head>
+<body style="background:#ffffff;color:#333333">
+  <!-- A genuinely near-monochrome page. Its links/buttons are all grays. There
+       is exactly ONE stray saturated link (#3366cc) — the false-accent trap:
+       the detector MUST NOT promote it, because it doesn't recur across enough
+       elements. Expected: NO accent (accentColor absent), primary stays neutral. -->
+  <header style="background:#ffffff">
+    <nav>
+      <a href="#" style="color:#333333">Home</a>
+      <a href="#" style="color:#333333">Products</a>
+      <a href="#" style="color:#555555">About</a>
+      <a href="#" style="color:#444444">Contact</a>
+    </nav>
+  </header>
+  <main style="background:#ffffff">
+    <button style="color:#333333;background:#eeeeee;border:1px solid #cccccc">Submit</button>
+    <a href="#" style="color:#666666">Terms</a>
+    <a href="#" style="color:#3366cc">One stray blue link</a>
+  </main>
+</body>
+</html>

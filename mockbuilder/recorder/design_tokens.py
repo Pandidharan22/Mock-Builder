@@ -6,6 +6,14 @@ deliberately coarse: the body font stack plus background colors observed on the
 major structural regions — sampling both modern layout landmarks and legacy
 presentation markup (``table``/``td`` with ``bgcolor``) so older sites like
 Hacker News still yield their brand colors.
+
+Structural sampling only sees container *backgrounds*, so it misses a brand
+accent that lives on interactive *text/borders* (a link-colored accent like a
+WooCommerce ``#7f54b3``). A separate **accent pass** tallies saturated colors
+across interactive elements and reports the dominant one as ``accentColor`` —
+but only when it clears a saturation floor and recurs across enough distinct
+elements. A monochrome page (or one stray colored link) reports no accent, so a
+false brand color is never manufactured.
 """
 
 from __future__ import annotations
@@ -111,7 +119,54 @@ _HARVEST_JS = r"""
     : '#ffffff';
   const bodyFg = rgbToHex(bodyStyle.color) || '#000000';
 
-  return {
+  // Accent detection. The brand/interactive color often lives on interactive
+  // TEXT/borders (links, buttons), NOT on container backgrounds — invisible to
+  // the structural pass above. (HN's #ff6600 IS a background, so it was caught;
+  // a link-colored accent like WooCommerce's #7f54b3 is not.) Tally SATURATED
+  // (non-neutral) colors across interactive elements and report the dominant one.
+  //
+  // ABSENCE GUARD: report an accent ONLY if it clears a saturation floor AND
+  // recurs across enough DISTINCT elements. A genuinely monochrome page — or one
+  // stray colored link — must report NO accent, so `primary` stays neutral rather
+  // than promoting a false brand color (a manufactured accent is the theming
+  // equivalent of a fabricated seed row). Counting distinct elements (not
+  // color/border/bg property hits) keeps a single link from inflating a signal.
+  const SATURATION_FLOOR = 40;    // max-min channel spread; below this = neutral
+  const ACCENT_MIN_ELEMENTS = 3;  // must recur across >= this many elements
+  const channelSpread = (h) => {
+    const r = parseInt(h.slice(1, 3), 16);
+    const g = parseInt(h.slice(3, 5), 16);
+    const b = parseInt(h.slice(5, 7), 16);
+    return Math.max(r, g, b) - Math.min(r, g, b);
+  };
+  const elementsByColor = {};
+  const interactive = Array.from(
+    document.querySelectorAll('a, button, [role="button"], [role="link"]')
+  );
+  interactive.forEach((el, idx) => {
+    const seen = new Set();
+    for (const prop of ['color', 'backgroundColor', 'borderColor']) {
+      const v = getComputedStyle(el)[prop];
+      if (!isVisibleColor(v)) continue;
+      const h = rgbToHex(v);
+      if (!h || channelSpread(h) < SATURATION_FLOOR) continue;
+      seen.add(h);
+    }
+    for (const h of seen) {
+      (elementsByColor[h] = elementsByColor[h] || new Set()).add(idx);
+    }
+  });
+  let accentColor = null;
+  let accentCount = 0;
+  for (const h in elementsByColor) {
+    if (elementsByColor[h].size > accentCount) {
+      accentCount = elementsByColor[h].size;
+      accentColor = h;
+    }
+  }
+  if (accentCount < ACCENT_MIN_ELEMENTS) accentColor = null;  // absence guard
+
+  const result = {
     fontFamily: bodyStyle.fontFamily,
     baseSize: bodyStyle.fontSize,
     bodyBackground: bodyBg,
@@ -120,6 +175,10 @@ _HARVEST_JS = r"""
     structuralColors: structuralColors,
     divBackgrounds: divBackgrounds,
   };
+  // Only emit accentColor when a real accent cleared the guard; omit it entirely
+  // otherwise so downstream sees "no accent", never a null to mis-map.
+  if (accentColor) result.accentColor = accentColor;
+  return result;
 }
 """
 
