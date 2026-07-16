@@ -344,3 +344,58 @@ SEQUENCE FROM HERE (runway: weeks):
   It does NOT block stores. Pick it up only if runway remains after stores +
   verifier + deploy. Risk if skipped: the demo IS faithful but doesn't LOOK
   branded in the first-glance test a human reviewer applies.
+
+  ## CURRENT POSITION (update)
+
+Phases 1′ and 2′ complete. Phase 3′ in progress:
+- Step 8 (image rendering) — DONE, committed.
+- Step 9 (accent detection) — DONE. Theming half 2 (templates barely use
+  `primary`) OUTSTANDING, deferred below stores.
+- Step 10-pre-fix (clickable + self-link branch filter) — DONE (this commit).
+  Multi-state crawling now works on accessible sites; was silently broken on
+  the whole modern web.
+
+NEXT: Step 10-pre — synthesis-based STATEFUL FLOW CAPTURE. Then 10a/10b (wire +
+render add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
+
+## STORES — THE PLAN (settled across four reads; do not re-derive)
+
+- Goal: agent-testable stateful mockups (add-to-cart -> badge -> cart -> qty).
+- THE WRITE PATH ALREADY EXISTS: mutateState -> mutate({type,store,payload}) ->
+  reducer (add/remove/increment/toggle). store is a real slice key; payload can
+  be the whole row (payloadFrom: boundEntity). Reducer LAZY-INITS unknown stores
+  (store:'cart' springs into existence on first add). READ path: useMockState()
+  exists; Screen already reads state. Missing: schema `stores`, a component
+  `stateBinding`, and a badge that renders a store-derived value.
+- FAITHFULNESS LINE (the core discipline — a fabricated affordance is the
+  Story 4..8 sin one layer up):
+    * Transcribe WHICH products have add-to-cart (scrapingcourse: 2 of 16, NOT
+      16). Never add buttons to products that lack them.
+    * Complete the PLUMBING of affordances that exist (add->badge->cart->qty must
+      actually work), but never invent screens/affordances the page lacks.
+- REASONING WAS BLIND TO AFFORDANCES: Step 4 made the payload structure-only
+  (records only), so the model never saw "Add to cart" / the cart badge and
+  emitted zero mutations. 10a's prerequisite is routing a DISTILLED, PER-ELEMENT,
+  LABEL-PRESERVING affordance channel back into reasoning (NOT the 34KB dump Step
+  4 killed). Labels carry the signal ("Add to cart"->add, "Select options"->nav,
+  "cart-contents"->read); dropping labels would collapse the distinction and
+  invite fabrication.
+- FLOW-SEQUENCE APPROACH = SYNTHESIS (chosen over inferred/declared): derive the
+  action from the REAL captured affordance, resolve into an ordered click-path,
+  hand to the existing replay (which already runs a full path in ONE persistent
+  context, so [add, cart-link] reaches the populated cart with NO architectural
+  change). No add button on page -> no action synthesized -> honest absence.
+- DETERMINISM UNDER MUTATION = ALREADY SAFE (measured): normalize_dom strips text
+  and all attrs but class/role/data-testid, so cart totals / session ids / cart
+  ids never reach the hash. Two fresh sessions -> byte-identical cart hash. Only
+  requirement: choose the action deterministically (first "Add to cart" in doc
+  order). No hash surgery needed.
+- SCOPE of 10-pre: execute ONE captured affordance's action, capture the
+  resulting state, deterministically, for a single linear flow. No planner, no
+  branching, no multi-item carts.
+- TERMINUS on scrapingcourse: the loop ends at the CART page. /checkout/
+  REDIRECTS TO SHOP — no form, no confirmation. 10b must terminate at cart;
+  building checkout/confirmation here would FABRICATE two screens the site lacks.
+  The full add->cart->checkout->confirmation loop is a 10c goal on a
+  DIFFERENT storefront whose checkout is real — VET ITS CHECKOUT BEFORE
+  COMMITTING, the way we vetted scrapingcourse.

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Skip-link fixture</title>
+  <style>
+    /* The universal visually-hidden pattern real sites use for skip-links:
+       1x1 px, clipped. NOT display:none, NOT visibility:hidden, HAS an
+       offsetParent, and nonzero size — so naive checks pass it. Playwright's
+       click times out on these. */
+    a, button { display: inline-block; padding: 8px 12px; }
+    /* Declared AFTER the generic rule and with higher specificity so padding:0
+       wins — a real skip-link's box really is 1x1 (verified on live sites); any
+       padding would inflate it and stop reproducing the bug. */
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0;
+      clip: rect(1px, 1px, 1px, 1px);
+      clip-path: inset(50%);
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <!-- The first two anchors in DOM order are hidden skip-links. Branch selection
+       must SKIP these and pick the real links below. -->
+  <a class="sr-only" id="skip-nav" href="#nav">Skip to navigation</a>
+  <a class="sr-only" id="skip-main" href="#main">Skip to content</a>
+
+  <!-- Excluded by attribute, not by name -->
+  <a href="/hidden-link" aria-hidden="true">Aria hidden link</a>
+  <button disabled>Disabled button</button>
+  <button aria-disabled="true">Aria-disabled button</button>
+  <a href="/none-link" style="display:none">Display none link</a>
+
+  <!-- The real, clickable targets -->
+  <nav id="nav">
+    <a href="/products" id="real-products">Products</a>
+    <a href="/cart" id="real-cart">Cart</a>
+    <a href="/about" id="real-about">About</a>
+  </nav>
+  <main id="main"><p>Content</p></main>
+</body>
+</html>

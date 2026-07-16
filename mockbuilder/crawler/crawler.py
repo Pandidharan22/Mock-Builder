@@ -38,6 +38,100 @@ EVIDENCE_DIR = PROJECT_ROOT / "evidence"
 # How many clickable elements we branch on from each newly-discovered state.
 _BRANCH_FACTOR = 2
 
+# Decides whether a branch candidate is usable, evaluated in-page on the settled
+# DOM. A candidate must be BOTH a real click target AND lead somewhere new. Both
+# are DISQUALIFICATIONS ("can't be clicked", "goes nowhere new"), not preferences:
+# this removes non-candidates from the input, it never ranks what's left — the
+# selection heuristic (first N in DOM order) is unchanged.
+#
+# Filters by PROPERTY, never by name — enumerating known offenders
+# ("skip-to-content", "sr-only") breaks on the next site that names them
+# differently; a property generalizes.
+#
+# The case that motivated this: accessibility skip-links. They are the universal
+# visually-hidden pattern — `position:absolute` at **1x1 px** with
+# `clip-path: inset(50%)`. They are NOT display:none, NOT visibility:hidden, they
+# DO have an offsetParent, and their size is nonzero — so the obvious checks pass
+# them. Only a *meaningful box* separates them from a real target. Playwright's
+# click times out on them (they can't receive the event), which killed the crawl
+# at one state on every accessible site.
+#
+# Note: deliberately NOT using `offsetParent` — it is null for `position:fixed`
+# elements, which would wrongly exclude legitimate sticky/fixed nav links.
+_CLICKABLE_JS = r"""
+(selectors) => {
+  // An element clipped away by an ANCESTOR is not clickable either — checking
+  // only the element's own box misses collapsed containers (e.g. a menu with
+  // overflow:hidden + max-height:0, whose children keep a real box but can never
+  // receive a click). Playwright times out on these exactly like a skip-link.
+  const clippedByAncestor = (el, r) => {
+    let p = el.parentElement;
+    while (p) {
+      const cs = getComputedStyle(p);
+      const clips = cs.overflow === 'hidden' || cs.overflowX === 'hidden'
+                 || cs.overflowY === 'hidden' || cs.clipPath !== 'none';
+      if (clips) {
+        const pr = p.getBoundingClientRect();
+        if (pr.width <= 1 || pr.height <= 1) return true;   // ancestor collapsed
+        const outside = r.right <= pr.left || r.left >= pr.right
+                     || r.bottom <= pr.top || r.top >= pr.bottom;
+        if (outside) return true;                            // clipped out of view
+      }
+      p = p.parentElement;
+    }
+    return false;
+  };
+
+  const clickable = (el) => {
+    if (!el) return false;
+    if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false;
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) {
+      return false;
+    }
+    const r = el.getBoundingClientRect();
+    // > 1 (not > 0): the 1x1 clipped visually-hidden pattern must not pass.
+    if (!(r.width > 1 && r.height > 1)) return false;
+    return !clippedByAncestor(el, r);
+  };
+
+  // A link whose resolved target is the page we're already on is not a branch —
+  // it's the same state by definition (dedup proves it after the fact by
+  // rejecting the visit). Dropping it beforehand removes a non-candidate from the
+  // input; it does NOT rank candidates. Fragment-only differences are the same
+  // document, so they count as self-links too.
+  const goesSomewhereNew = (el) => {
+    const href = el.getAttribute('href');
+    if (href === null) return true;  // no href (e.g. a button) — not a self-link
+    const raw = href.trim();
+    if (raw === '' || raw === '#') return false;
+    let target;
+    try {
+      target = new URL(raw, document.baseURI);
+    } catch (e) {
+      return false;  // unresolvable target is not a usable branch
+    }
+    const here = new URL(document.location.href);
+    return !(
+      target.origin === here.origin
+      && target.pathname === here.pathname
+      && target.search === here.search
+    );
+  };
+
+  return selectors.map((sel) => {
+    let el = null;
+    try {
+      el = document.querySelector(sel);
+    } catch (e) {
+      return false;  // an unparseable selector is not a usable branch
+    }
+    return clickable(el) && goesSomewhereNew(el);
+  });
+}
+"""
+
 
 class Crawler:
     """Drives a headless browser to capture app state as evidence via BFS."""
@@ -159,7 +253,7 @@ class Crawler:
             )
 
             # Queue follow-up states: a few clickable elements to branch on.
-            for selector in self._pick_branch_selectors(elements):
+            for selector in await self._pick_branch_selectors(page, elements):
                 queue.append({"url": base_url, "clicks": clicks + [selector]})
 
             record = {
@@ -181,16 +275,29 @@ class Crawler:
             await page.close()
 
     @staticmethod
-    def _pick_branch_selectors(elements: list[dict[str, Any]]) -> list[str]:
-        """Pick up to ``_BRANCH_FACTOR`` selectors to branch on, preferring
-        links and buttons (the elements most likely to lead to new screens)."""
+    async def _pick_branch_selectors(
+        page: Any, elements: list[dict[str, Any]]
+    ) -> list[str]:
+        """Pick up to ``_BRANCH_FACTOR`` selectors to branch on, preferring links
+        and buttons (the elements most likely to lead to new screens).
+
+        Candidates are first filtered to elements that are genuinely CLICKABLE
+        (see ``_CLICKABLE_JS``) — otherwise the first elements in DOM order on any
+        accessible site are hidden skip-links, whose clicks time out and abandon
+        the path, capping the crawl at a single state. The selection heuristic is
+        unchanged (first ``_BRANCH_FACTOR`` in DOM order); only its input is now
+        clickable. Deterministic: same DOM -> same eligible set -> same picks.
+        """
         preferred = [e for e in elements if e.get("tag") in ("a", "button")]
         pool = preferred or elements
-        selectors: list[str] = []
+
+        candidates: list[str] = []
         for e in pool:
             sel = e.get("selector")
-            if sel and sel not in selectors:
-                selectors.append(sel)
-            if len(selectors) >= _BRANCH_FACTOR:
-                break
-        return selectors
+            if sel and sel not in candidates:
+                candidates.append(sel)
+        if not candidates:
+            return []
+
+        eligible = await page.evaluate(_CLICKABLE_JS, candidates)
+        return [sel for sel, ok in zip(candidates, eligible) if ok][:_BRANCH_FACTOR]
