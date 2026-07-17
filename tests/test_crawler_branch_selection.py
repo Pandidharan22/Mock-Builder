@@ -1,6 +1,6 @@
 """Tests for branch-selection clickability filtering (Step 10-pre-fix).
 
-The bug: `_pick_branch_selectors` took the first two `a`/`button` in DOM order.
+The bug: `_pick_branch_elements` took the first two `a`/`button` in DOM order.
 On any accessible site those are hidden skip-links; `page.click()` times out on
 them, `_visit` abandons the path, and the crawl dies at ONE state. Multi-state
 crawling was silently broken on essentially every modern accessible site — HN was
@@ -27,7 +27,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SKIPLINK_FIXTURE = FIXTURES / "skiplink_fixture.html"
 
 
-async def _pick_for(fixture: Path) -> tuple[list[str], list[dict]]:
+async def _pick_for(fixture: Path) -> tuple[list[dict], list[dict]]:
     """Run the real discovery + branch selection against a fixture page."""
     from playwright.async_api import async_playwright
 
@@ -37,10 +37,15 @@ async def _pick_for(fixture: Path) -> tuple[list[str], list[dict]]:
             page = await browser.new_page()
             await page.goto(fixture.resolve().as_uri(), wait_until="load")
             elements = await discover_elements(page)
-            picks = await Crawler._pick_branch_selectors(page, elements)
+            picks = await Crawler._pick_branch_elements(page, elements)
             return picks, elements
         finally:
             await browser.close()
+
+
+def _selectors(picks: list[dict]) -> str:
+    """Join picked elements' selectors for substring assertions."""
+    return " ".join(p["selector"] for p in picks)
 
 
 def _run(coro):
@@ -57,7 +62,7 @@ def test_skiplinks_are_not_selected_real_links_are():
     discovered = [e.get("selector") for e in elements]
     assert any("skip-nav" in (s or "") for s in discovered)
     # ... but they must NOT be branched on.
-    joined = " ".join(picks)
+    joined = _selectors(picks)
     assert "skip-nav" not in joined
     assert "skip-main" not in joined
     # the real links win instead
@@ -69,7 +74,7 @@ def test_skiplinks_are_not_selected_real_links_are():
 def test_disabled_and_aria_hidden_are_excluded():
     """Excluded by property (attribute), not by name."""
     picks, _ = _run(_pick_for(SKIPLINK_FIXTURE))
-    joined = " ".join(picks)
+    joined = _selectors(picks)
     assert "hidden-link" not in joined  # aria-hidden="true"
     assert "none-link" not in joined  # display:none
     # neither disabled button is picked (they'd be the first buttons in DOM order)
@@ -81,6 +86,25 @@ def test_branch_selection_is_deterministic():
     first, _ = _run(_pick_for(SKIPLINK_FIXTURE))
     second, _ = _run(_pick_for(SKIPLINK_FIXTURE))
     assert first == second
+
+
+def test_branch_selection_preserves_labels():
+    """Selection returns the ELEMENT, not a bare selector, so the label survives.
+
+    A selector says where an element is; only the label says what it DOES. Edge
+    provenance records "this state came from clicking 'Cart'", which is
+    unrecoverable from `nth-of-type` paths — and reconstructing it by matching on
+    selector would mis-attribute whenever two elements share one.
+    """
+    picks, _ = _run(_pick_for(SKIPLINK_FIXTURE))
+
+    assert all(isinstance(p, dict) for p in picks)
+    for p in picks:
+        assert p.keys() >= {"tag", "text", "selector"}
+
+    by_selector = {p["selector"]: p for p in picks}
+    assert by_selector["#real-products"]["text"] == "Products"
+    assert by_selector["#real-cart"]["text"] == "Cart"
 
 
 def test_filter_is_property_based_not_name_based():

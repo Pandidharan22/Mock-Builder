@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Storefront fixture</title>
+</head>
+<body>
+  <!-- A storefront shaped like the real one this step was built against: a header
+       cart link, and a product grid where only SOME products offer a direct
+       add-to-cart (the others need option selection first). Faithfulness means
+       acting on the add-to-cart that exists — never assuming every product has one. -->
+  <!-- A collapsed hamburger menu, as the real storefront has. Its links keep a
+       real box of their own but sit inside a 0-height overflow:hidden ancestor,
+       so they can never receive a click — Playwright times out on them.
+       This "Cart" is FIRST in document order, so synthesis must filter by
+       clickability; picking this one abandons the path and reports a cartless
+       storefront. That is the exact false absence this fixture exists to catch. -->
+  <div class="collapsed-menu" style="overflow: hidden; max-height: 0;">
+    <a href="cart_fixture.html" id="hidden-cart">Cart</a>
+  </div>
+
+  <nav>
+    <!-- A Home link on the home page: a self-link, so branch selection filters it
+         out and the only link-reachable state here is the (empty) cart. -->
+    <a href="storefront_fixture.html" id="home-link">Home</a>
+    <a href="cart_fixture.html" id="cart-link">Cart</a>
+  </nav>
+
+  <ul id="product-list">
+    <li>
+      <a href="#" class="product">Abominable Hoodie $69.00</a>
+      <!-- No direct add: mirrors a variable product. -->
+      <a href="#" class="options">Select options</a>
+    </li>
+    <li>
+      <a href="#" class="product">Aero Daily Fitness Tee $24.00</a>
+      <!-- FIRST add-to-cart in document order — the one synthesis must choose. -->
+      <a href="#" class="add" data-item="Aero Daily Fitness Tee"
+         onclick="addToCart(this); return false;">Add to cart</a>
+    </li>
+    <li>
+      <a href="#" class="product">Affirm Water Bottle $7.00</a>
+      <!-- A SECOND add-to-cart: if the action choice were not first-in-document-
+           order, it could be picked instead and the cart would hold the wrong item. -->
+      <a href="#" class="add" data-item="Affirm Water Bottle"
+         onclick="addToCart(this); return false;">Add to cart</a>
+    </li>
+  </ul>
+
+  <script>
+    // The add mutates state and retargets the cart link, so the cart page renders
+    // what was actually added. This is why the path must run in ONE context:
+    // replaying [add, cart] from a fresh page is what carries the effect across.
+    const cart = [];
+    function addToCart(el) {
+      cart.push(el.dataset.item);
+      document.getElementById('cart-link').href =
+        'cart_fixture.html?items=' + encodeURIComponent(cart.join('|'));
+    }
+  </script>
+</body>
+</html>

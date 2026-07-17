@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cart fixture</title>
+</head>
+<body>
+  <nav>
+    <a href="storefront_fixture.html" id="shop-link">Shop</a>
+  </nav>
+
+  <h1>Cart</h1>
+  <ul id="cart-items"></ul>
+  <p id="cart-empty">Your cart is empty.</p>
+
+  <script>
+    // The empty and populated carts must differ STRUCTURALLY, not just in text:
+    // normalize_dom strips every text node before hashing, so a "0 items" ->
+    // "1 item" label change alone would hash identical and the populated cart
+    // would be dedup-rejected as an already-seen state. Rows are added and the
+    // empty notice is REMOVED (not hidden — a display:none element is still in
+    // the tree and still hashes the same).
+    const raw = new URLSearchParams(location.search).get('items');
+    const items = raw ? raw.split('|').filter(Boolean) : [];
+
+    if (items.length) {
+      document.getElementById('cart-empty').remove();
+      const list = document.getElementById('cart-items');
+      for (const name of items) {
+        const li = document.createElement('li');
+        li.className = 'cart-item';
+        // A cart row links back to its product, as real carts do. That makes the
+        // row an *interactive element*, so which item was added is recorded in
+        // the state's own evidence — a single row is not a repeating collection,
+        // so records.json legitimately can't answer that question.
+        const link = document.createElement('a');
+        link.href = '#';
+        link.className = 'cart-item-link';
+        link.textContent = name;
+        li.appendChild(link);
+        list.appendChild(li);
+      }
+    }
+  </script>
+</body>
+</html>

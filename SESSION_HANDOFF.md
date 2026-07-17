@@ -47,16 +47,16 @@ The PoC IS the blueprint for Phase 1′.
 
 ## Build order (phases from PLAN_v2)
 
-1. **Phase 1′ — `crawler/records.py`**: repeating-unit extraction → emit
+1. **Phase 1′ — `crawler/records.py`** ✅ DONE: repeating-unit extraction → emit
    `records.json` per crawl state. (De-risked by the PoC.)
 2. **Phase 2′ — reasoning** ✅ DONE: STRUCTURE-ONLY. seed removed from schema
    (rejected, not just discouraged); prompt asks for shape not data; payload is
    text-only (no screenshot — the model is text-only), one representative record
    per collection + tokens. LLM selects primary collection (sourceCollection).
-3. **Phase 3′ — generator** (NEXT, starting Step 6): inject seed into
-   entity.seed from records.json via entity.sourceCollection (NOT from the
-   model); then add cart/collection store + header badge; detail-screen
-   template + reachable edge variants.
+3. **Phase 3′ — generator** (IN PROGRESS): seed injection from records.json via
+   sourceCollection/sourceRole ✅; images ✅; accent ✅; stateful capture +
+   provenance ✅ (10-pre). REMAINING: cart/collection store + header badge
+   (10a/10b), detail-screen template + reachable edge variants.
 4. **Re-run HN** (confirm zero filler) → then **grocery demo** (confirm the same
    pipeline builds a stateful cart harness with no per-app code).
 5. **Verifier checks** (P-data: every seed row traces to a real record; P-state:
@@ -76,10 +76,15 @@ The PoC IS the blueprint for Phase 1′.
 
 ---
 
-## CURRENT POSITION
+## CURRENT POSITION — HISTORICAL, SUPERSEDED
+
+> This section records the position as of Step 5c and its "NEXT: Step 6" is long
+> done. **For where the project actually stands, read "CURRENT POSITION (update)"
+> near the end of this file.** Kept because the per-step notes below are still
+> the settled record of WHY each step is shaped the way it is.
 
 Phase 1′ (crawler extraction) and Phase 2′ (structure-only reasoning) are
-COMPLETE and committed. Next action: Phase 3′, Step 6 — the injection zip.
+COMPLETE and committed.
 
 Completed and committed:
 - Step 1  — crawler/records.py: app-agnostic repeating-unit extractor + role
@@ -110,32 +115,29 @@ Completed and committed:
             order-dependence where a short first-row title corrupted the entity
             shape. One real record, never a union.
 
-Test count: 70 passing.
+Test count at Step 5c: 70 passing. (Now 121 — see CURRENT POSITION (update).)
 
 THE DEFECT IS DEAD: seed data is now structurally impossible for the model to
 emit (schema rejects it), and primacy is a semantic LLM decision, not the
-extractor's scoring arithmetic. Rendering is INTENTIONALLY seedless until Step 6
-adds injection — do not read a seedless render as a regression.
+extractor's scoring arithmetic.
 
-NEXT: Phase 3′, Step 6 — the injection zip. There is NO transform between
-cli.py:78 (reason) and cli.py:95 (generate) today; the generator reads
-entity.seed directly off the entity object (GlobalContext.jsx.jinja:8). Step 6
-inserts a transform that reads records.json, and for each entity zips
-entity.fields × collections[entity.sourceCollection].records → entity.seed,
-before the generator sees the model. OPEN FORK being decided before Step 6 is
-written: the entity's fields have model-chosen camelCase NAMES (commentCount,
-author) but records are keyed by ROLE (comment_count, meta). The field→role
-mapping needed for the zip is not yet recorded per-field. Deciding whether to
-recover it heuristically at injection time OR add a `sourceRole` per field
-(a Step-5-shaped schema addition). Do not write Step 6 until this is resolved.
+Step 6 — the injection zip — is DONE. Its open fork (entity fields carry
+model-chosen camelCase NAMES, records are keyed by ROLE, and nothing recorded the
+mapping) was RESOLVED by adding `sourceRole` per field rather than recovering it
+heuristically. See "LINKAGE CONTRACT" below for the settled result.
 
 ## Key files
 
 - `PLAN.md` — original spec + property table (P1–P8)
 - `PLAN_v2.md` — corrected architecture (the plan we follow)
 - `repeating_extractor_poc.py` — working proof of the core extractor
-- `mockbuilder/crawler/` — where records.py will live
-- `mockbuilder/reasoning/prompts.py`, `reason.py` — Phase 2′ targets
+- `mockbuilder/crawler/records.py` — the extractor (FROZEN, see below)
+- `mockbuilder/crawler/crawler.py` — BFS + clickability filter + affordance
+  synthesis (`synthesize_cart_path`) + provenance writing
+- `mockbuilder/crawler/dom.py` — `normalize_dom` (the state hash) +
+  `discover_elements` (the affordance capture 10a will consume)
+- `mockbuilder/reasoning/prompts.py`, `reason.py` — Phase 2′ targets; also 10a's
+  target (the affordance channel lands here)
 - `mockbuilder/generator/generate.py` + `templates/` — Phase 3′ targets
 - `app_model.schema.json` — the contract; gets store/state additions in Phase 3′
 - records.py is FROZEN: _DETECTOR_JS, infer_role, grouping, adjacent-sibling
@@ -345,22 +347,36 @@ SEQUENCE FROM HERE (runway: weeks):
   verifier + deploy. Risk if skipped: the demo IS faithful but doesn't LOOK
   branded in the first-glance test a human reviewer applies.
 
-  ## CURRENT POSITION (update)
+## CURRENT POSITION (update) — THIS SECTION IS AUTHORITATIVE
+
+The "CURRENT POSITION" section near the top of this file is HISTORICAL: its
+"NEXT: Step 6" is long superseded. Read this one.
 
 Phases 1′ and 2′ complete. Phase 3′ in progress:
 - Step 8 (image rendering) — DONE, committed.
 - Step 9 (accent detection) — DONE. Theming half 2 (templates barely use
   `primary`) OUTSTANDING, deferred below stores.
-- Step 10-pre-fix (clickable + self-link branch filter) — DONE (this commit).
+- Step 10-pre-fix (clickable + self-link branch filter) — DONE, committed.
   Multi-state crawling now works on accessible sites; was silently broken on
   the whole modern web.
+- Step 10-pre (synthesis + edge provenance) — DONE (this commit). 121 tests.
 
-NEXT: Step 10-pre — synthesis-based STATEFUL FLOW CAPTURE. Then 10a/10b (wire +
-render add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
+NEXT: Step 10a — route a DISTILLED, PER-ELEMENT, LABEL-PRESERVING affordance
+channel into reasoning, so the model can declare stores/mutations at all (it
+emits 0 mutateState today because it never sees an affordance). Part A already
+made labels survive capture; 10a is the reasoning half. Then 10b (render the
+add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
 
 ## STORES — THE PLAN (settled across four reads; do not re-derive)
 
 - Goal: agent-testable stateful mockups (add-to-cart -> badge -> cart -> qty).
+  CAUTION (07-17): that goal chain is the CLASS of harness we want, NOT a
+  description of scrapingcourse. Its cart page now has no item rows and no
+  quantity control (see the terminus notes below), so building "cart -> qty"
+  against THAT site would fabricate affordances it lacks — the exact sin this
+  section exists to prevent. The faithful chain there today ends at the badge.
+  A site whose cart genuinely populates is now a prerequisite for demoing the
+  full chain, which folds into the 10c storefront decision.
 - THE WRITE PATH ALREADY EXISTS: mutateState -> mutate({type,store,payload}) ->
   reducer (add/remove/increment/toggle). store is a real slice key; payload can
   be the whole row (payloadFrom: boundEntity). Reducer LAZY-INITS unknown stores
@@ -392,10 +408,94 @@ render add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
   order). No hash surgery needed.
 - SCOPE of 10-pre: execute ONE captured affordance's action, capture the
   resulting state, deterministically, for a single linear flow. No planner, no
-  branching, no multi-item carts.
-- TERMINUS on scrapingcourse: the loop ends at the CART page. /checkout/
-  REDIRECTS TO SHOP — no form, no confirmation. 10b must terminate at cart;
-  building checkout/confirmation here would FABRICATE two screens the site lacks.
-  The full add->cart->checkout->confirmation loop is a 10c goal on a
-  DIFFERENT storefront whose checkout is real — VET ITS CHECKOUT BEFORE
-  COMMITTING, the way we vetted scrapingcourse.
+  branching, no multi-item carts. — DONE; see "10-pre DELIVERED" below.
+
+## 10-pre DELIVERED (settled; do not re-derive)
+
+- EVIDENCE NOW RECORDS EDGES, not just states. evidence/{hash}_provenance.json:
+    { url, from_state: <parent hash|null>, clicks: [sel,...], via: <element|null> }
+  Each state has exactly ONE incoming edge (BFS-first-wins), so provenance is a
+  FIELD ON THE STATE, not a separate edges file — there is no many-to-one to
+  model. `clicks` is the FULL path from `url`, not the last hop.
+- `via` IS NOT CAUSATION — the trap for 10a. It records the path that FIRST
+  reached a state, not the only path nor the cause. Synthesis is queue-PREPENDED
+  (appending lets cheap link-follows exhaust max_states and starve the cart), so
+  it wins the dedup race: on scrapingcourse the cart is attributed to 'Add to
+  cart' even though the cart link alone reaches the identical state. Proving
+  causation needs a control (reach the state WITHOUT the action). Not built.
+- _pick_branch_selectors -> _pick_branch_elements, returns element DICTS. The
+  selector<->label association already exists at selection time; narrowing to a
+  string discards it, and recovering it by lookup-by-selector MIS-ATTRIBUTES when
+  two elements share a selector — a false provenance record.
+- discover_elements now returns {tag, text, selector, testid, href}. href is
+  absolute (resolved against baseURI); testid/href are None when absent. Nothing
+  reads elements.json yet — it is written for 10a.
+- _CLICKABLE_JS takes {selectors, requireNewTarget}. ONE definition of
+  "clickable", two callers: branching requires a new target (a self-link wastes
+  budget); SYNTHESIS MUST NOT (an ACTION is not a navigation — an add-to-cart
+  legitimately has href="#"). Never write a second clickability check.
+- SYNTHESIS MUST FILTER BY CLICKABILITY — learned the hard way. Unfiltered, the
+  first "Cart" in DOM order is inside a COLLAPSED HAMBURGER: real box, unclickable,
+  click times out, path abandoned, storefront reported cartless. "An unclickable
+  match degrades to honest absence" is WRONG: it is a FALSE absence,
+  indistinguishable from a real one. The fixture reproduces this trap.
+- DETECTION RULES (anchored, same discipline as records.py role inference):
+    ACTION      -> LABEL only. Its href is site-private query vocabulary
+                   (?add-to-cart=2765) and must not be matched.
+    NAVIGATION  -> LABEL **or** TARGET. A link's intent lives in either, and real
+                   headers express it only in the target: the one clickable cart
+                   link on scrapingcourse is labelled "$0.00 0 items" — a price,
+                   containing no word for what it is. Label-only detection is
+                   blind to it and calls a cart site cartless.
+    Targets match a whole PATH SEGMENT, query IGNORED. ?add-to-cart=2765 contains
+    the substring "cart" but its path is /ecommerce/ — segment equality is what
+    stops the add being mistaken for the cart it feeds ([add, add]).
+  Widen by ADDING anchored alternatives; never loosen to substring.
+- SYNTHESIS OFFERS A PATH; it does not assert the path leads anywhere new. If the
+  action has no structural effect, the replay lands on an already-seen state and
+  dedup rejects it — the crawl is exactly what BFS alone produces. Honest, not a
+  bug: the action really happened and the page really did not change.
+- HONEST ABSENCE IS PROVEN, live and hermetic: no add-to-cart -> no path -> no
+  cart state. HN's captured state set is byte-identical to a BFS-only baseline
+  (synthesis seam stubbed). Guard this in any future change.
+- TERMINUS on scrapingcourse: /checkout/ REDIRECTS TO SHOP — no form, no
+  confirmation. 10b must not build checkout/confirmation here; that would
+  FABRICATE two screens the site lacks. The full
+  add->cart->checkout->confirmation loop is a 10c goal on a DIFFERENT storefront
+  whose checkout is real — VET ITS CHECKOUT BEFORE COMMITTING, the way we vetted
+  scrapingcourse.
+- SCRAPINGCOURSE'S CART NO LONGER POPULATES — the site changed under us, so any
+  older note about it is suspect. JOURNAL's 07-10 terminus read recorded the cart
+  page as real — h1 'Cart', item rows, quantity control, proceed-to-checkout — at
+  hash a7ccbf5b33908333. That was true when written; it is FALSE now (07-17).
+  Today /cart/ says "Your cart is currently empty!" with no rows, no quantity
+  control, no proceed-to-checkout, and hashes 07e8a64d... normalize_dom has NOT
+  changed, so THE SITE CHANGED under us. The add still works (server session
+  mutates: badge '$0.00 0 items' -> '$7.00 1 item') but the badge is TEXT and
+  normalize_dom strips text, so:
+    cart via [cart]        == cart via [add, cart]   (SAME hash, measured)
+  i.e. there is NO structurally distinct populated cart on this site anymore, and
+  scrapingcourse can no longer demonstrate add->populated-cart at all. The
+  capability is proven HERMETICALLY instead (tests/fixtures/storefront_fixture
+  + cart_fixture, whose cart really populates). Do not re-derive from the old
+  entry — RE-MEASURE before trusting any claim about this site's cart, and
+  expect the demo storefront question to be reopened at 10c.
+
+- PROVENANCE `via` IS REACHABILITY, NOT CAUSATION. Because synthesis is prepended,
+  the synthesized [add, cart] path wins the first-wins dedup race, so a captured
+  cart is attributed to "Add to cart" EVEN WHEN the cart link alone reaches the
+  identical state (true on scrapingcourse, whose cart is a stub). 10a MUST NOT
+  read `via` as "this affordance caused this screen." Establishing causation
+  needs a CONTROL — reach the state without the action and compare — which
+  10-pre deliberately did not do. If 10a needs causation (e.g. to wire a mutation
+  only when the add genuinely changes state), that control is its own scoped
+  problem. Faithful default: `via` tells you which affordance-path first reached
+  a state, nothing stronger.
+
+- scrapingcourse commerce is STUBBED: /cart/ shows "empty" regardless of adds
+  (badge is the only signal, text-only, stripped by normalize_dom -> post-add
+  cart hashes identical to never-added), /checkout/ redirects to shop. It proves
+  stateful CAPTURE hermetically (storefront_fixture.html has a real populating
+  cart) but cannot host a live add->populated-cart or a checkout demo. The 10c
+  demo needs a DIFFERENT storefront, vetted for BOTH a populating cart AND a real
+  checkout+confirmation BEFORE building.

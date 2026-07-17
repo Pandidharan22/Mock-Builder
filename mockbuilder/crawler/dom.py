@@ -75,9 +75,20 @@ _NORMALIZE_JS = r"""
 # --------------------------------------------------------------------------- #
 # Element discovery
 # --------------------------------------------------------------------------- #
-# Find every clickable/input element and return {tag, text, selector}. The
-# selector prefers id / data-testid, otherwise builds an nth-of-type path so it
-# is unique and stable enough to re-address the element.
+# Find every clickable/input element and return
+# {tag, text, selector, testid, href}. The selector prefers id / data-testid,
+# otherwise builds an nth-of-type path so it is unique and stable enough to
+# re-address the element.
+#
+# `text` is the element's LABEL and is load-bearing downstream, not decoration: a
+# selector like `li:nth-of-type(6) > a:nth-of-type(2)` cannot say what an element
+# DOES, whereas "Add to cart" can. Affordance synthesis and edge provenance both
+# key off the label, so it must stay attached to the element it came from.
+#
+# `href` is the other half of that meaning: a link's intent lives in its label OR
+# in where it GOES, and real headers routinely express the second without the
+# first — a cart widget labelled "$0.00 0 items" pointing at /cart/ says "cart"
+# with its target and nothing else.
 _DISCOVER_JS = r"""
 () => {
   const SELECTOR = 'a, button, input, select, [role="button"], [role="tab"]';
@@ -115,6 +126,18 @@ _DISCOVER_JS = r"""
     return parts.join(' > ');
   };
 
+  // Resolved against baseURI so callers get an absolute target and never have to
+  // re-resolve a relative href without knowing the page it came from.
+  const absoluteHref = (el) => {
+    const raw = el.getAttribute('href');
+    if (raw === null) return null;
+    try {
+      return new URL(raw, document.baseURI).href;
+    } catch (e) {
+      return null;
+    }
+  };
+
   const elements = Array.from(document.querySelectorAll(SELECTOR));
   return elements.map((el) => {
     const text =
@@ -123,6 +146,8 @@ _DISCOVER_JS = r"""
       tag: el.tagName.toLowerCase(),
       text: text,
       selector: cssSelector(el),
+      testid: el.getAttribute('data-testid'),
+      href: absoluteHref(el),
     };
   });
 }
@@ -135,5 +160,9 @@ async def normalize_dom(page: "Page") -> str:
 
 
 async def discover_elements(page: "Page") -> list[dict[str, Any]]:
-    """Return a list of ``{tag, text, selector}`` for all actionable elements."""
+    """Return ``{tag, text, selector, testid, href}`` for every actionable element.
+
+    ``testid`` is ``None`` when the element carries no ``data-testid``; ``href`` is
+    ``None`` for non-links (and for unresolvable targets), and absolute otherwise.
+    """
     return await page.evaluate(_DISCOVER_JS)
