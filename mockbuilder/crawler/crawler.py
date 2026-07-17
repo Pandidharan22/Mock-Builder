@@ -31,6 +31,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -154,6 +155,179 @@ _CLICKABLE_JS = r"""
   });
 }
 """
+
+
+# --------------------------------------------------------------------------- #
+# Settle predicate (Step 10-pre-fix2)
+# --------------------------------------------------------------------------- #
+# `page.click()` returns as soon as the event is dispatched, so something must
+# wait for the page to actually REACT before we read its state.
+#
+# `wait_for_load_state("networkidle")` was that something, and it is wrong here.
+# Load states are per-DOCUMENT LIFECYCLE events, not a live view of the network:
+# once `networkidle` has fired for the current document (which `goto(wait_until=
+# "networkidle")` guarantees on arrival), asking for it again returns IMMEDIATELY
+# no matter how many requests are in flight right now. It waits for navigations
+# and is blind to everything after them.
+#
+# That blindness shipped a real defect. A WooCommerce add is `ajax_add_to_cart`:
+# it preventDefaults its own href (the href is a no-JS fallback, NOT a
+# navigation), fires an XHR, and mutates the DOM when the response lands. The
+# crawler clicked it, "waited" for a lifecycle event that had already fired, read
+# the page ~0ms later, captured the state the add had not yet changed, and stamped
+# `via: "Add to cart"` on it — a false record of what happened.
+#
+# So wait for QUIESCENCE, measured live, not for a lifecycle event:
+#   * no requests in flight (this is what catches the AJAX add), AND
+#   * no DOM mutations for a quiet window (this is what catches the effect
+#     landing — the response arriving is not the same moment as the DOM settling),
+#   * with a ceiling, because some pages never go quiet (long-poll, analytics,
+#     a hung endpoint) and a crawl must not hang on them.
+#
+# Both signals are required and neither is sufficient. Network-only would return
+# while the response is still being rendered; DOM-only would declare victory in
+# the silent gap between the click and the response — the very window this bug
+# lives in.
+#
+# `networkidle` is still used, for the one job it is right for: waiting out a
+# NAVIGATION's post-load requests. It was never broken at that — it is broken as a
+# general "has the page reacted" question. The two stages compose: networkidle
+# covers the new-document case (and no-ops for in-place clicks, where it was the
+# bug), quiescence covers the in-place case. Neither alone spans both.
+#
+# Quiescence is measured on the NORMALIZED DOM — the exact artifact the state hash
+# is taken from — and not on raw MutationObserver events. That is deliberate and
+# was also learned by measuring: scrapingcourse mutates its DOM continuously
+# (analytics and text churn), so a raw-mutation quiet window NEVER closed and
+# every settle ran to the ceiling, capturing whatever had rendered by then —
+# different on each run. But `normalize_dom` strips text and every attribute but
+# class/role/data-testid, so none of that churn can move the hash. Waiting for the
+# thing we actually measure to stop changing is both the honest question and the
+# only one that can be answered stably: settle is defined as "what we are about to
+# hash has stopped changing".
+_SETTLE_QUIET_MS = 500       # normalized DOM must be unchanged this long
+_SETTLE_CEILING_MS = 12000   # hard cap; past this we proceed and log
+_SETTLE_POLL_MS = 100
+# A request outstanding longer than this is presumed fire-and-forget and stops
+# being waited for. NOT a guess — measured on scrapingcourse's cart page:
+#   * a Google Analytics beacon (`google.com/g/collect`) that never completes, and
+#   * ~20 SAME-ORIGIN `other` requests fired at once (prefetch/speculation) that
+#     also never complete.
+# So "zero requests in flight" is simply unreachable there, and it is unreachable
+# on most of the real web. Requiring it made the predicate degenerate into exactly
+# the fixed sleep this step exists to avoid: every settle rode the ceiling and
+# captured whatever had rendered by then — one run caught the cart mid-render (17
+# elements, no rows), the next caught it complete (25 elements). Non-deterministic,
+# which is worse than the bug being fixed. Note origin filtering would NOT have
+# helped: the prefetches are same-origin.
+#
+# THE TRADE-OFF, stated plainly: this must exceed the slowest request whose
+# response we genuinely need, and stay under the time a never-completing request
+# is allowed to block us. There is no value that is right for every site. 1500ms
+# clears a normal add (scrapingcourse's is ~300ms; the AJAX fixture's is 800ms) and
+# drops the dead prefetches quickly. A legitimately slower-than-1.5s action would
+# be under-waited — the failure mode to watch for, and the reason a settle that
+# hits the ceiling is logged rather than silent.
+_SETTLE_STALE_MS = 1500
+
+class _Inflight:
+    """Tracks requests the page has outstanding, and how long they've been so.
+
+    Playwright exposes no "is the network busy right now" API — only the
+    per-document lifecycle states that caused this bug — so we track events. Must
+    be attached BEFORE the click: a click handler fires its XHR synchronously, so
+    a counter attached afterwards would miss the very request it exists to see.
+    """
+
+    def __init__(self, page: Any) -> None:
+        self._pending: dict[Any, float] = {}
+        page.on("request", self._start)
+        page.on("requestfinished", self._end)
+        page.on("requestfailed", self._end)
+
+    def _start(self, request: Any) -> None:
+        self._pending[request] = time.monotonic()
+
+    def _end(self, request: Any) -> None:
+        self._pending.pop(request, None)
+
+    def busy(self) -> int:
+        """Requests young enough that their response could still change the page.
+
+        Anything older than ``_SETTLE_STALE_MS`` is presumed fire-and-forget (an
+        analytics beacon that will never complete) and excluded, so one tracker
+        cannot make the page look permanently busy.
+        """
+        cutoff = time.monotonic() - _SETTLE_STALE_MS / 1000
+        return sum(1 for started in self._pending.values() if started > cutoff)
+
+
+async def _settle_after_click(page: Any, inflight: _Inflight) -> bool:
+    """Wait until the page has actually reacted to a click. True if it settled.
+
+    Handles both kinds of click with one predicate: a NAVIGATION (wait for the new
+    document, then for it to go quiet) and an IN-PLACE MUTATION (no navigation at
+    all — quiescence is the only signal there is).
+
+    Deterministic by construction: we return only from a page with no requests in
+    flight that has not changed for ``_SETTLE_QUIET_MS``, so the state we then hash
+    is a state that has stopped moving. Returns False if the ceiling was hit, which
+    is logged — a crawl that proceeds on an unsettled page is a recorded compromise,
+    never a silent one.
+    """
+    deadline = time.monotonic() + _SETTLE_CEILING_MS / 1000
+
+    def _remaining_ms() -> float:
+        return max(0.0, (deadline - time.monotonic()) * 1000)
+
+    # STAGE 1 — the navigation, if there was one. `networkidle` is not useless; it
+    # is the RIGHT tool for exactly this and blind to everything else. For a NEW
+    # document its lifecycle has not fired yet, so it genuinely waits for the
+    # post-load XHRs — which is what a client-rendered page needs (WooCommerce's
+    # cart block fetches its contents from the Store API *after* load, so the page
+    # loads, goes quiet, and only then wakes up to render the cart). For an
+    # in-place click nothing navigated, the state already fired, and both calls
+    # return instantly — costing nothing precisely where they were never any use.
+    try:
+        await page.wait_for_load_state("load", timeout=_remaining_ms())
+        await page.wait_for_load_state("networkidle", timeout=_remaining_ms())
+    except Exception:
+        pass  # a slow/absent navigation is the ceiling's problem, not an error
+
+    # STAGE 2 — quiescence of the normalized DOM (the artifact we hash).
+    fingerprint: str | None = None
+    stable_since = time.monotonic()
+
+    while True:
+        try:
+            current = hashlib.sha256(
+                (await normalize_dom(page)).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            # A navigation mid-poll destroys the execution context; treat it as a
+            # change and re-read against the new document on the next pass.
+            current = None
+
+        now = time.monotonic()
+        if current != fingerprint:
+            fingerprint = current
+            stable_since = now
+        stable_ms = (now - stable_since) * 1000
+
+        if inflight.busy() == 0 and stable_ms >= _SETTLE_QUIET_MS:
+            return True
+
+        if now >= deadline:
+            logger.info(
+                "settle: ceiling %dms reached (busy=%d, stable=%.0fms); "
+                "proceeding on an unsettled page",
+                _SETTLE_CEILING_MS,
+                inflight.busy(),
+                stable_ms,
+            )
+            return False
+
+        await page.wait_for_timeout(_SETTLE_POLL_MS)
 
 
 # --------------------------------------------------------------------------- #
@@ -340,13 +514,21 @@ class Crawler:
             # responses are missed.
             await attach_network_listener(page, self.evidence_dir)
 
+            # Attach BEFORE anything navigates or clicks: a click handler fires
+            # its XHR synchronously, so a counter attached later misses it.
+            inflight = _Inflight(page)
+
             await page.goto(base_url, wait_until="networkidle")
 
             # Replay the click path that defines this state.
             for selector in clicks:
                 try:
                     await page.click(selector, timeout=5000)
-                    await page.wait_for_load_state("networkidle")
+                    # Wait for the page to actually REACT (see _settle_after_click).
+                    # `wait_for_load_state("networkidle")` used to live here and is
+                    # a no-op after the first document: it silently discarded every
+                    # AJAX action's effect.
+                    await _settle_after_click(page, inflight)
                 except Exception:
                     # A step in the path could not be reached; abandon it.
                     return None

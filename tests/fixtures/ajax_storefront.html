@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AJAX storefront fixture</title>
+</head>
+<body>
+  <!-- A storefront whose add-to-cart is genuinely ASYNCHRONOUS, like every real
+       one. storefront_fixture.html's add is a synchronous onclick with no
+       network, which is precisely why it never caught the race that shipped:
+       the fixture was cleaner than reality. This one is not.
+
+       MUST be served over HTTP (see tests/test_crawler_settle.py) — a real
+       request is the point, and fetch() is blocked on file:// origins. -->
+  <nav>
+    <a href="ajax_storefront.html" id="home-link">Home</a>
+    <a href="cart_fixture.html" id="cart-link">Cart</a>
+  </nav>
+
+  <ul id="product-list">
+    <li>
+      <a href="#" class="product">Abominable Hoodie $69.00</a>
+      <a href="#" class="options">Select options</a>
+    </li>
+    <li>
+      <a href="#" class="product">Aero Daily Fitness Tee $24.00</a>
+      <a href="#" class="add" data-item="Aero Daily Fitness Tee"
+         onclick="addToCart(this); return false;">Add to cart</a>
+    </li>
+    <li>
+      <a href="#" class="product">Affirm Water Bottle $7.00</a>
+      <a href="#" class="add" data-item="Affirm Water Bottle"
+         onclick="addToCart(this); return false;">Add to cart</a>
+    </li>
+  </ul>
+
+  <script>
+    // The add issues a REAL request that the server answers slowly, and only
+    // mutates the DOM once it resolves. So between the click and the effect there
+    // is a window in which the page looks completely untouched — read the DOM
+    // there and you capture the pre-add state and call the cart empty.
+    //
+    // A bare setTimeout would also race, but nothing could ever legitimately wait
+    // for it: a timer emits no signal. A real add emits an in-flight request, and
+    // that is exactly what the settle predicate waits on. Faithful, and waitable.
+    const cart = [];
+    async function addToCart(el) {
+      await fetch('/slow-add?item=' + encodeURIComponent(el.dataset.item));
+      cart.push(el.dataset.item);
+      document.getElementById('cart-link').href =
+        'cart_fixture.html?items=' + encodeURIComponent(cart.join('|'));
+    }
+  </script>
+</body>
+</html>

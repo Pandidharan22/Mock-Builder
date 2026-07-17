@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Never-settles fixture</title>
+</head>
+<body>
+  <!-- A page whose STRUCTURE never stops changing. This is what the settle
+       ceiling is actually for: not a hung request (a stale request is simply
+       stopped waiting for — real pages fire fire-and-forget beacons constantly),
+       but a page that will never present a stable DOM to hash. The crawl must
+       proceed anyway, and say so. -->
+  <button id="churn" onclick="start()">Start churn</button>
+  <div id="sink"></div>
+  <script>
+    function start() {
+      // Appends an ELEMENT, not text: normalize_dom strips text, so a ticking
+      // clock would hash identical and settle immediately (correctly). Only
+      // structural churn can keep the normalized DOM moving.
+      setInterval(() => {
+        const d = document.createElement('div');
+        d.className = 'tick';
+        document.getElementById('sink').appendChild(d);
+      }, 100);
+    }
+  </script>
+</body>
+</html>

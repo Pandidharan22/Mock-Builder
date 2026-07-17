@@ -359,24 +359,36 @@ Phases 1′ and 2′ complete. Phase 3′ in progress:
 - Step 10-pre-fix (clickable + self-link branch filter) — DONE, committed.
   Multi-state crawling now works on accessible sites; was silently broken on
   the whole modern web.
-- Step 10-pre (synthesis + edge provenance) — DONE (this commit). 121 tests.
+- Step 10-pre (synthesis + edge provenance) — DONE. The AJAX-race defect it
+  shipped with is now FIXED by 10-pre-fix2 (below); live capture works.
+- 10c-vet — ABORTED, premise false (scrapingcourse's cart was never broken).
+  Left behind a keeper: tools/vet_storefront.py.
+- Step 10-pre-fix2 (AJAX-settle predicate) — DONE (this commit), 129 tests.
+  The race is dead: `_visit` now calls `_settle_after_click` instead of bare
+  networkidle, and AJAX adds are captured WITH their effect. LIVE PROOF:
+  scrapingcourse's populated cart a7ccbf5b33908333 (the exact 07-10 hash — item
+  row, qty control, Proceed to Checkout) captured as a genuinely NEW state, TRUE
+  `via:'Add to cart'`, deterministic across two crawls; HN byte-identical.
+  See "THE SETTLE PREDICATE" below for the shape and the one judgment call.
 
 NEXT: Step 10a — route a DISTILLED, PER-ELEMENT, LABEL-PRESERVING affordance
 channel into reasoning, so the model can declare stores/mutations at all (it
 emits 0 mutateState today because it never sees an affordance). Part A already
 made labels survive capture; 10a is the reasoning half. Then 10b (render the
-add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
+add->badge->cart loop), then 10c (the full loop; terminus is the CART, since
+/checkout/ genuinely redirects to shop — re-confirmed 07-17 from a POPULATED
+cart, so that limit is real and not another measurement artifact).
 
 ## STORES — THE PLAN (settled across four reads; do not re-derive)
 
 - Goal: agent-testable stateful mockups (add-to-cart -> badge -> cart -> qty).
-  CAUTION (07-17): that goal chain is the CLASS of harness we want, NOT a
-  description of scrapingcourse. Its cart page now has no item rows and no
-  quantity control (see the terminus notes below), so building "cart -> qty"
-  against THAT site would fabricate affordances it lacks — the exact sin this
-  section exists to prevent. The faithful chain there today ends at the badge.
-  A site whose cart genuinely populates is now a prerequisite for demoing the
-  full chain, which folds into the 10c storefront decision.
+  This chain IS available on scrapingcourse: its cart really populates (item rows
+  + quantity control, hash a7ccbf5b...), so add->badge->cart->qty is faithful
+  there. Only the CHECKOUT leg is absent (/checkout/ redirects to shop). A 07-17
+  note here briefly claimed the cart had no rows and no qty — FALSE, retracted;
+  that was the AJAX race, not the site. The race is now FIXED (10-pre-fix2), and
+  the populated cart is captured live and deterministically, so P-state IS
+  demonstrable on this site.
 - THE WRITE PATH ALREADY EXISTS: mutateState -> mutate({type,store,payload}) ->
   reducer (add/remove/increment/toggle). store is a real slice key; payload can
   be the whole row (payloadFrom: boundEntity). Reducer LAZY-INITS unknown stores
@@ -417,12 +429,23 @@ add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
   Each state has exactly ONE incoming edge (BFS-first-wins), so provenance is a
   FIELD ON THE STATE, not a separate edges file — there is no many-to-one to
   model. `clicks` is the FULL path from `url`, not the last hop.
-- `via` IS NOT CAUSATION — the trap for 10a. It records the path that FIRST
-  reached a state, not the only path nor the cause. Synthesis is queue-PREPENDED
-  (appending lets cheap link-follows exhaust max_states and starve the cart), so
-  it wins the dedup race: on scrapingcourse the cart is attributed to 'Add to
-  cart' even though the cart link alone reaches the identical state. Proving
-  causation needs a control (reach the state WITHOUT the action). Not built.
+- `via` IS THE FIRST PATH, NOT THE CAUSE — a LATENT trap for 10a. It records the
+  path that FIRST reached a state, not the only path nor the cause. Synthesis is
+  queue-PREPENDED (appending lets cheap link-follows exhaust max_states and starve
+  the cart), so it wins the dedup race; if an action's effect were not structural,
+  `via` would attribute a state to an affordance that didn't produce it. The
+  scrapingcourse example once recorded here was an ARTIFACT OF THE AJAX RACE, not
+  a real instance — with the add awaited, the populated cart IS distinct and
+  via:'Add to cart' is causally right. So: latent and unobserved, not demonstrated.
+  Proving causation needs a control (reach the state WITHOUT the action). Not built.
+- THE AJAX RACE — FIXED (10-pre-fix2). Kept here because the SHAPE of the bug is
+  load-bearing: bare `wait_for_load_state('networkidle')` after a click does NOT
+  wait for an AJAX effect — networkidle is a per-document lifecycle event that has
+  already fired, so it returns instantly and the crawl reads state before the XHR
+  even lands. Any action whose effect is an XHR was LOST, with the action's
+  provenance stamped on the state it never changed. A navigation-based action was
+  unaffected (networkidle waits for the load), which is why it hid for a week.
+  The replacement is `_settle_after_click`; see "THE SETTLE PREDICATE" below.
 - _pick_branch_selectors -> _pick_branch_elements, returns element DICTS. The
   selector<->label association already exists at selection time; narrowing to a
   string discards it, and recovering it by lookup-by-selector MIS-ATTRIBUTES when
@@ -458,44 +481,129 @@ add->badge->cart loop), then 10c (full loop on a vetted-checkout site).
 - HONEST ABSENCE IS PROVEN, live and hermetic: no add-to-cart -> no path -> no
   cart state. HN's captured state set is byte-identical to a BFS-only baseline
   (synthesis seam stubbed). Guard this in any future change.
+
+## THE SETTLE PREDICATE (10-pre-fix2; do not re-derive, four wrong designs were tried)
+
+- `_visit` replaced bare `wait_for_load_state('networkidle')` with
+  `_settle_after_click(page, inflight)`. `_Inflight` is attached BEFORE the click
+  (a click handler fires its XHR synchronously; a counter attached after misses
+  it). SHAPE:
+    STAGE 1  `load` then `networkidle` — waits a NAVIGATION's post-load XHRs
+             (WooCommerce's cart block fetches contents AFTER load); no-ops for an
+             in-place click (the state already fired). networkidle was never
+             broken at THIS — only as a general "did the page react" test.
+    STAGE 2  poll until busy()==0 AND the NORMALIZED-DOM fingerprint has held
+             _SETTLE_QUIET_MS(500ms), else _SETTLE_CEILING_MS(12000ms) ceiling
+             (LOGGED, never silent). busy() ignores requests older than
+             _SETTLE_STALE_MS(1500ms) as fire-and-forget.
+- THE FOUR WRONG DESIGNS (each passed the hermetic suite; each caught ONLY live —
+  the tests could not gate them, which is the standing lesson):
+    1. Dropped networkidle -> captured the cart MID-RENDER (client-rendered block
+       not yet fetched). Keep networkidle for navigations; it composes with (2).
+    2. Quiescence via MutationObserver -> never closed. scrapingcourse mutates
+       text/attrs endlessly, but normalize_dom STRIPS those, so they can't move
+       the hash. Measure quiescence of the NORMALIZED DOM (the artifact we hash),
+       not raw mutations.
+    3. Wait for zero in-flight -> unreachable. A GA beacon (google.com/g/collect)
+       + ~20 SAME-ORIGIN prefetches never complete. So the predicate degenerated
+       into a fixed 5s sleep and captured non-deterministically (17 vs 25
+       elements run-to-run). Origin filtering would NOT help (same-origin). Hence
+       _SETTLE_STALE_MS drops stale requests.
+    4. Ceiling for hung requests -> wrong. Staleness handles those; the ceiling is
+       for a DOM that never STABILIZES. hang_fixture must SETTLE (<6s);
+       churn_fixture (appends ELEMENTS, since text wouldn't survive normalize)
+       hits the ceiling.
+- THE ONE JUDGMENT CALL — _SETTLE_STALE_MS=1500 is NOT derived. It must exceed the
+  slowest request whose response we need AND stay under how long a never-returning
+  request may block us; no value fits every site. A legit action slower than 1.5s
+  is UNDER-waited, and unlike a ceiling hit that failure is SILENT. Residual risk.
+- COST: HN +3.8s (~25%), states identical — the predicate runs after every click.
+  Judged worth it. FIXTURE IS STILL CLEANER THAN REALITY (no prefetch storm / no
+  analytics / no client-rendered block), so _SETTLE_STALE_MS is gated only by the
+  live check, never the suite. If a future site under-waits, this is the first
+  suspect.
 - TERMINUS on scrapingcourse: /checkout/ REDIRECTS TO SHOP — no form, no
   confirmation. 10b must not build checkout/confirmation here; that would
   FABRICATE two screens the site lacks. The full
   add->cart->checkout->confirmation loop is a 10c goal on a DIFFERENT storefront
   whose checkout is real — VET ITS CHECKOUT BEFORE COMMITTING, the way we vetted
   scrapingcourse.
-- SCRAPINGCOURSE'S CART NO LONGER POPULATES — the site changed under us, so any
-  older note about it is suspect. JOURNAL's 07-10 terminus read recorded the cart
-  page as real — h1 'Cart', item rows, quantity control, proceed-to-checkout — at
-  hash a7ccbf5b33908333. That was true when written; it is FALSE now (07-17).
-  Today /cart/ says "Your cart is currently empty!" with no rows, no quantity
-  control, no proceed-to-checkout, and hashes 07e8a64d... normalize_dom has NOT
-  changed, so THE SITE CHANGED under us. The add still works (server session
-  mutates: badge '$0.00 0 items' -> '$7.00 1 item') but the badge is TEXT and
-  normalize_dom strips text, so:
-    cart via [cart]        == cart via [add, cart]   (SAME hash, measured)
-  i.e. there is NO structurally distinct populated cart on this site anymore, and
-  scrapingcourse can no longer demonstrate add->populated-cart at all. The
-  capability is proven HERMETICALLY instead (tests/fixtures/storefront_fixture
-  + cart_fixture, whose cart really populates). Do not re-derive from the old
-  entry — RE-MEASURE before trusting any claim about this site's cart, and
-  expect the demo storefront question to be reopened at 10c.
+- SCRAPINGCOURSE'S CART IS FINE. IT POPULATES. The 07-10 terminus read above is
+  CORRECT and still reproduces — cart hash a7ccbf5b33908333, item rows, the works.
+  A 07-17 entry briefly claimed "the site changed and its cart no longer
+  populates". THAT CLAIM WAS FALSE and has been retracted (see JOURNAL 07-17
+  "10c-vet ABORTED"). The site never changed; the MEASUREMENT was broken by the
+  AJAX race below. Do not resurrect it. Measured proof:
+    add awaited 0ms    -> 07e8a64d...  cart body "currently empty"
+    add awaited 3000ms -> a7ccbf5b...  cart body has the item   <- matches 07-10
+  The demo storefront question is CLOSED: scrapingcourse stays. 10c-vet was
+  aborted because its premise (a stub cart) did not exist.
 
-- PROVENANCE `via` IS REACHABILITY, NOT CAUSATION. Because synthesis is prepended,
-  the synthesized [add, cart] path wins the first-wins dedup race, so a captured
-  cart is attributed to "Add to cart" EVEN WHEN the cart link alone reaches the
-  identical state (true on scrapingcourse, whose cart is a stub). 10a MUST NOT
-  read `via` as "this affordance caused this screen." Establishing causation
-  needs a CONTROL — reach the state without the action and compare — which
-  10-pre deliberately did not do. If 10a needs causation (e.g. to wire a mutation
-  only when the add genuinely changes state), that control is its own scoped
-  problem. Faithful default: `via` tells you which affordance-path first reached
-  a state, nothing stronger.
+- PROVENANCE `via` IS REACHABILITY, NOT CAUSATION — but LATENT, never observed.
+  Because synthesis is prepended, the synthesized [add, cart] path wins the
+  first-wins dedup race, so a captured cart WOULD be attributed to "Add to cart"
+  even if the cart link alone reached the identical state. 10a MUST NOT read `via`
+  as "this affordance caused this screen." Establishing causation needs a CONTROL
+  — reach the state without the action and compare — which 10-pre did not do.
+  RETRACTED: the "(true on scrapingcourse, whose cart is a stub)" example that
+  stood here was an ARTIFACT OF THE AJAX RACE, not a real instance. With the add
+  awaited, scrapingcourse's populated cart IS a distinct state and via:'Add to
+  cart' is causally correct there. The trap is real in principle; no site has yet
+  exhibited it. Faithful default: `via` tells you which affordance-path first
+  reached a state, nothing stronger.
 
-- scrapingcourse commerce is STUBBED: /cart/ shows "empty" regardless of adds
-  (badge is the only signal, text-only, stripped by normalize_dom -> post-add
-  cart hashes identical to never-added), /checkout/ redirects to shop. It proves
-  stateful CAPTURE hermetically (storefront_fixture.html has a real populating
-  cart) but cannot host a live add->populated-cart or a checkout demo. The 10c
-  demo needs a DIFFERENT storefront, vetted for BOTH a populating cart AND a real
-  checkout+confirmation BEFORE building.
+- RETRACTED — "scrapingcourse commerce is STUBBED" WAS FALSE (my error, 07-17).
+  Its cart POPULATES: item rows + quantity control, hash a7ccbf5b33908333, exactly
+  as the 07-10 read recorded. The "stub" reading came from measuring the cart
+  BEFORE the AJAX add landed. Only /checkout/ is genuinely absent (redirects to
+  shop) — re-confirmed 07-17 FROM A POPULATED CART, so THAT limit is real and not
+  another measurement artifact. scrapingcourse DOES host a live
+  add->populated-cart demo (captured deterministically since 10-pre-fix2) and CAN
+  satisfy P-state. Terminus is the CART, as 07-10 said all along.
+
+- DEMO SITE = SCRAPINGCOURSE. Question CLOSED; 10c-vet aborted, no replacement
+  needed. If one is ever wanted, demowebshop.tricentis.com/books was vetted and
+  PASSES (its cart populates); note its /-root FAILS because the first add is a
+  gift card that navigates rather than adds.
+
+- FREEZE-THE-EVIDENCE STRATEGY — OPEN DECISION, re-opened by the retraction. Its
+  original rationale ("scrapingcourse changed in 7 days, so don't depend on a live
+  site") WAS FALSE — the site never changed. An honest case still exists: live
+  sites really do vanish mid-project (magento.softwaretestingboard.com was DOWN on
+  07-17 — Cloudflare 526, invalid origin SSL), and the pipeline is
+  deterministic-from-evidence, so building from a committed capture is honest and
+  deadline-safe. But it is no longer FORCED. Decide it on its merits, not on my
+  retracted finding.
+
+- P-STATE NEEDS A REAL CART — and it HAS one. PLAN_v2's verifier property "a
+  declared mutateState produces an asserted DOM change" cannot pass where the
+  action has no observable effect; scrapingcourse qualifies (a7ccbf5b... != the
+  empty cart), now that the AJAX race is fixed. For ANY future site check the
+  criterion
+  is a HASH DELTA, never a visual check (a text-only badge looks populated but is
+  stripped by normalize_dom) — AND both paths must land on the SAME page, or the
+  delta just compares a product page to a cart page and "passes" meaninglessly
+  (demowebshop fooled the probe exactly that way). tools/vet_storefront.py
+  implements both halves.
+
+- 10-pre COMPLETE AND VERIFIED LIVE. The AJAX-race defect is fixed
+  (10-pre-fix2). scrapingcourse's populated cart (a7ccbf5b33908333) is captured
+  as a new state with a true via:"Add to cart" edge. All prior corrections stand;
+  the cart populates, checkout redirects to shop (terminus = cart), P-state is
+  demonstrable on scrapingcourse. NO site replacement needed.
+- STANDING LIMITATION (do not try to "fix" with a better fixture — 5th recurrence
+  of the lesson): settle-timing correctness against real network conditions
+  CANNOT be unit-tested; the hermetic suite went green for four DIFFERENT broken
+  settle designs. This class of correctness is established by LIVE measurement and
+  guarded by a re-runnable live check against a known control hash, not by tests.
+- _SETTLE_STALE_MS=1500 is a JUDGMENT CONSTANT, not derived. Failure mode is
+  SILENT under-waiting (an action slower than the window captured empty with a
+  false via) — unlike a ceiling hit, which logs. Guarded by: (a) a log line
+  distinguishing stale-stop from ceiling-hit, (b) vet_storefront.py re-run against
+  scrapingcourse's control a7ccbf5b before trusting a dependent run. Do not tune
+  blind.
+- NEXT: 10a — the affordance channel. Route distilled, per-element, label-
+  preserving affordances (the provenance `via` edges + the page's real nav
+  elements) into reasoning. DELETE the hardcoded HN nav list in prompts.py:40.
+  Gate: grocery/storefront Navbar comes from real nav (not "Home"/HN pattern),
+  and the model declares the cart mutation from the real add-to-cart affordance.

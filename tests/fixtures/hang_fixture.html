@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hanging-request fixture</title>
+</head>
+<body>
+  <!-- A click whose request never comes back. The settle predicate must give up
+       at its ceiling and let the crawl continue: a page that never goes quiet
+       (long-poll, analytics beacon, a genuinely hung endpoint) must not hang the
+       crawl forever. This is the reason the predicate has a ceiling at all. -->
+  <button id="hang" onclick="fetch('/hang')">Hang</button>
+</body>
+</html>
